@@ -10,8 +10,10 @@
 // either express or implied. See the License for the specific language governing permissions and
 // limitations under the License.
 
+#pragma once
+
 #ifdef _WIN32
 #include "../windows/thread/thread.h"
 #else
-#include "../unix/thread/thread.h"
+#include "../unix/thread.h"
 #endif

@@ -24,6 +24,7 @@
 #include <algorithm>
 
 #include "comm/ptrbuffer.h"
+#include "comm/time_utils.h"
 #include "xlog/xlogger/loginfo_extract.h"
 #include "mars/xlog/xloggerbase.h"
 
@@ -86,46 +87,23 @@ void log_formater(const XLoggerInfo* _info, const char* _logbody, PtrBuffer& _lo
         char temp_time[64] = {0};
 
         if (0 != _info->timeval.tv_sec) {
-            time_t sec = _info->timeval.tv_sec;
-            tm tm = *localtime((const time_t*)&sec);
-
-#ifdef ANDROID
-            snprintf(temp_time,
-                     sizeof(temp_time),
-                     "%d-%02d-%02d %+.1f %02d:%02d:%02d.%.3ld",
-                     1900 + tm.tm_year,
-                     1 + tm.tm_mon,
-                     tm.tm_mday,
-                     tm.tm_gmtoff / 3600.0,
-                     tm.tm_hour,
-                     tm.tm_min,
-                     tm.tm_sec,
-                     _info->timeval.tv_usec / 1000);
-#elif _WIN32
-            snprintf(temp_time,
-                     sizeof(temp_time),
-                     "%d-%02d-%02d %+.1f %02d:%02d:%02d.%.3d",
-                     1900 + tm.tm_year,
-                     1 + tm.tm_mon,
-                     tm.tm_mday,
-                     (-_timezone) / 3600.0,
-                     tm.tm_hour,
-                     tm.tm_min,
-                     tm.tm_sec,
-                     _info->timeval.tv_usec / 1000);
+            const tm tm = mars_local_time(_info->timeval.tv_sec);
+#ifdef _WIN32
+            const double timezone_hours = (-_timezone) / 3600.0;
 #else
+            const double timezone_hours = tm.tm_gmtoff / 3600.0;
+#endif
             snprintf(temp_time,
                      sizeof(temp_time),
                      "%d-%02d-%02d %+.1f %02d:%02d:%02d.%.3d",
                      1900 + tm.tm_year,
                      1 + tm.tm_mon,
                      tm.tm_mday,
-                     tm.tm_gmtoff / 3600.0,
+                     timezone_hours,
                      tm.tm_hour,
                      tm.tm_min,
                      tm.tm_sec,
-                     _info->timeval.tv_usec / 1000);
-#endif
+                     static_cast<int>(_info->timeval.tv_usec / 1000));
         }
 
         // _log.AllocWrite(30*1024, false);

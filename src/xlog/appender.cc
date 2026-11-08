@@ -40,7 +40,6 @@
 #else
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
-#include <sys/mount.h>
 #endif
 
 #include <assert.h>
@@ -54,6 +53,7 @@
 
 #include "boost/filesystem.hpp"
 #include "boost/iostreams/device/mapped_file.hpp"
+#include "comm/assert/__assert.h"
 #include "comm/autobuffer.h"
 #include "comm/bootrun.h"
 #include "comm/mmap_util.h"
@@ -68,7 +68,7 @@
 #include "mars/xlog/xloggerbase.h"
 
 #ifdef __APPLE__
-#include "comm/objc/data_protect_attr.h"
+#include "comm/apple/data_protection.h"
 #endif
 
 #include "log_base_buffer.h"
@@ -172,7 +172,7 @@ void XloggerAppender::Write(const XLoggerInfo* _info, const char* _log) {
 
     if (consolelog_open_)
         ConsoleLog(_info, _log);
-#ifdef ANDROID
+#ifdef __ANDROID__
     else if (_info && _info->traceLog == 1)
         ConsoleLog(_info, _log);
 #endif
@@ -270,7 +270,7 @@ void XloggerAppender::Close() {
 
     log_close_ = true;
 
-    cond_buffer_async_.notifyAll();
+    cond_buffer_async_.notifyAll(true);
 
     if (thread_async_.isruning())
         thread_async_.join();
@@ -316,7 +316,7 @@ void XloggerAppender::Open(const XLogConfig& _config) {
                                                                      config_.nameprefix_));
         thread_moveold_->start_after(3 * 60 * 1000);
 #ifdef __APPLE__
-        setAttrProtectionNone(config_.cachedir_.c_str());
+        comm::SetLogDirectoryProtection(config_.cachedir_.c_str());
 #endif
     }
 
@@ -325,7 +325,7 @@ void XloggerAppender::Open(const XLogConfig& _config) {
     thread_timeout_log_->start_after(2 * 60 * 1000);
     boost::filesystem::create_directories(config_.logdir_);
 #ifdef __APPLE__
-    setAttrProtectionNone(config_.logdir_.c_str());
+    comm::SetLogDirectoryProtection(config_.logdir_.c_str());
 #endif
     dir_attr_lock.unlock();
 
@@ -426,7 +426,7 @@ void XloggerAppender::Open(const XLogConfig& _config) {
 
 std::string XloggerAppender::__MakeLogFileNamePrefix(const timeval& _tv, const char* _prefix) {
     time_t sec = _tv.tv_sec;
-    tm tcur = *localtime((const time_t*)&sec);
+    tm tcur = mars_local_time(sec);
 
     char temp[64] = {0};
     snprintf(temp, 64, "_%d%02d%02d", 1900 + tcur.tm_year, 1 + tcur.tm_mon, tcur.tm_mday);
@@ -680,7 +680,7 @@ void XloggerAppender::__GetMarkInfo(char* _info, size_t _info_len) {
     struct timeval tv;
     gettimeofday(&tv, 0);
     time_t sec = tv.tv_sec;
-    struct tm tm_tmp = *localtime((const time_t*)&sec);
+    struct tm tm_tmp = mars_local_time(sec);
     char tmp_time[64] = {0};
     strftime(tmp_time, sizeof(tmp_time), "%Y-%m-%d %z %H:%M:%S", &tm_tmp);
     snprintf(_info, _info_len, "[%" PRIdMAX ",%" PRIdMAX "][%s]", xlogger_pid(), xlogger_tid(), tmp_time);
@@ -743,8 +743,8 @@ bool XloggerAppender::__OpenLogFile(const std::string& _log_dir) {
 
     if (nullptr != logfile_) {
         time_t sec = tv.tv_sec;
-        tm tcur = *localtime((const time_t*)&sec);
-        tm filetm = *localtime(&openfiletime_);
+        tm tcur = mars_local_time(sec);
+        tm filetm = mars_local_time(openfiletime_);
 
         if (filetm.tm_year == tcur.tm_year && filetm.tm_mon == tcur.tm_mon && filetm.tm_mday == tcur.tm_mday) {
             return true;
@@ -782,22 +782,22 @@ bool XloggerAppender::__OpenLogFile(const std::string& _log_dir) {
     }
 
     if (0 != last_time_ && (now_time - last_time_) > (time_t)((now_tick - last_tick_) / 1000 + 300)) {
-        struct tm tm_tmp = *localtime((const time_t*)&last_time_);
+        struct tm tm_tmp = mars_local_time(last_time_);
         char last_time_str[64] = {0};
         strftime(last_time_str, sizeof(last_time_str), "%Y-%m-%d %z %H:%M:%S", &tm_tmp);
 
-        tm_tmp = *localtime((const time_t*)&now_time);
+        tm_tmp = mars_local_time(now_time);
         char now_time_str[64] = {0};
         strftime(now_time_str, sizeof(now_time_str), "%Y-%m-%d %z %H:%M:%S", &tm_tmp);
 
         char log[1024] = {0};
         snprintf(log,
                  sizeof(log),
-                 "[F][ last log file:%s from %s to %s, time_diff:%ld, tick_diff:%" PRIu64 "\n",
+                 "[F][ last log file:%s from %s to %s, time_diff:%" PRIdMAX ", tick_diff:%" PRIu64 "\n",
                  last_file_path_,
                  last_time_str,
                  now_time_str,
-                 now_time - last_time_,
+                 static_cast<intmax_t>(now_time - last_time_),
                  now_tick - last_tick_);
 
         AutoBuffer tmp_buff;
@@ -938,6 +938,7 @@ void XloggerAppender::__AsyncLogThread() {
         if (nullptr == log_buff_)
             break;
 
+        const bool closing = log_close_;
         AutoBuffer tmp;
         log_buff_->Flush(tmp);
         lock_buffer.unlock();
@@ -945,7 +946,7 @@ void XloggerAppender::__AsyncLogThread() {
         if (nullptr != tmp.Ptr())
             __Log2File(tmp.Ptr(), tmp.Length(), true);
 
-        if (log_close_)
+        if (closing)
             break;
 
         cond_buffer_async_.wait(15 * 60 * 1000);
@@ -1035,7 +1036,7 @@ const char* XloggerAppender::Dump(const void* _dumpbuffer, size_t _len) {
     struct timeval tv = {0};
     gettimeofday(&tv, nullptr);
     time_t sec = tv.tv_sec;
-    tm tcur = *localtime((const time_t*)&sec);
+    tm tcur = mars_local_time(sec);
 
     char forder_name[128] = {0};
     snprintf(forder_name, sizeof(forder_name), "%d%02d%02d", 1900 + tcur.tm_year, 1 + tcur.tm_mon, tcur.tm_mday);

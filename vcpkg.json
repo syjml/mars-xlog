@@ -9,6 +9,10 @@
       "default-features": false
     },
     "boost-nowide",
-    "zstd"
+    "zstd",
+    {
+      "name": "zlib",
+      "platform": "!windows"
+    }
   ]
 }

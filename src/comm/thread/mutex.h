@@ -10,8 +10,15 @@
 // either express or implied. See the License for the specific language governing permissions and
 // limitations under the License.
 
+#pragma once
+
 #ifdef _WIN32
 #include "../windows/thread/mutex.h"
 #else
-#include "../unix/thread/mutex.h"
+#include <mutex>
+
+namespace mars::comm {
+using Mutex = std::mutex;
+using RecursiveMutex = std::recursive_mutex;
+}
 #endif

@@ -26,6 +26,7 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "comm/time_utils.h"
 #include "log_magic_num.h"
 
 #ifdef WIN32
@@ -155,7 +156,7 @@ void LogCrypt::UpdateLogHour(char* _data) {
     struct timeval tv;
     gettimeofday(&tv, 0);
     time_t sec = tv.tv_sec;
-    struct tm tm_tmp = *localtime((const time_t*)&sec);
+    struct tm tm_tmp = mars_local_time(sec);
 
     char hour = (char)tm_tmp.tm_hour;
     memcpy(_data + GetHeaderLen() - sizeof(uint32_t) - sizeof(char) * 64 - sizeof(char), &hour, sizeof(hour));
@@ -188,7 +189,7 @@ void LogCrypt::SetHeaderInfo(char* _data, bool _is_async, char _magic_start) {
     struct timeval tv;
     gettimeofday(&tv, 0);
     time_t sec = tv.tv_sec;
-    tm tm_tmp = *localtime((const time_t*)&sec);
+    tm tm_tmp = mars_local_time(sec);
 
     char hour = (char)tm_tmp.tm_hour;
     memcpy(_data + sizeof(_magic_start) + sizeof(seq_), &hour, sizeof(hour));

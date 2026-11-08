@@ -17,10 +17,6 @@
 #define XLOGGER_TAG ""
 #endif
 
-#if defined(__APPLE__) && (defined(NDEBUG))
-void __assert_rtn(const char*, const char*, int, const char*) __dead2;
-#endif
-
 #ifdef WIN32
 #ifndef NDEBUG
 // The Windows CRT exports _assert but its headers only declare _wassert.
@@ -57,12 +53,12 @@ void __ASSERT(const char* _pfile, int _line, const char* _pfunc, const char* _pe
     xlogger_Write(&info, assertlog);
 
     if (IS_ASSERT_ENABLE()) {
-#if defined(ANDROID)  //&& (defined(DEBUG))
+#if defined(__ANDROID__) && !defined(NDEBUG)
         raise(SIGTRAP);
         __assert2(_pfile, _line, _pfunc, _pexpression);
 #endif
 
-#if defined(__APPLE__)  //&& (defined(DEBUG))
+#if defined(__APPLE__) && !defined(NDEBUG)
         __assert_rtn(_pfunc, _pfile, _line, _pexpression);
 #endif
     }
@@ -117,12 +113,12 @@ void __ASSERTV2(const char* _pfile,
     xlogger_Write(&info, assertlog);
 
     if (IS_ASSERT_ENABLE()) {
-#if defined(ANDROID)  //&& (defined(DEBUG))
+#if defined(__ANDROID__) && !defined(NDEBUG)
         raise(SIGTRAP);
         __assert2(_pfile, _line, _pfunc, _pexpression);
 #endif
 
-#if defined(__APPLE__)  //&& (defined(DEBUG))
+#if defined(__APPLE__) && !defined(NDEBUG)
         __assert_rtn(_pfunc, _pfile, _line, _pexpression);
 #endif
 

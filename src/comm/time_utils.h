@@ -46,6 +46,16 @@ uint64_t timeMs();
 
 uint64_t clock_app_monotonic();  // ms
 
+static inline struct tm mars_local_time(time_t seconds) {
+    struct tm result = {0};
+#ifdef _WIN32
+    localtime_s(&result, &seconds);
+#else
+    localtime_r(&seconds, &result);
+#endif
+    return result;
+}
+
 // oc不能使用常引用，必须传值或者传指针
 inline uint64_t time_diff_abs_us(const struct timeval tv1, const struct timeval tv2) {
     return labs((tv1.tv_sec - tv2.tv_sec) * 1000000 + tv1.tv_usec - tv2.tv_usec);  // labs：long abs

@@ -10,8 +10,15 @@
 // either express or implied. See the License for the specific language governing permissions and
 // limitations under the License.
 
+#pragma once
+
 #ifdef _WIN32
 #include "../windows/thread/lock.h"
 #else
-#include "../unix/thread/lock.h"
+#include "mutex.h"
+
+namespace mars::comm {
+using ScopedLock = std::unique_lock<Mutex>;
+using ScopedRecursiveLock = std::unique_lock<RecursiveMutex>;
+}
 #endif

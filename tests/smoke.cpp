@@ -1,7 +1,11 @@
 #include <mars/xlog/appender.h>
 #include <mars/xlog/xlogger.h>
 #include <mars/xlog/xlogger_interface.h>
+#ifdef XLOG_ENABLE_ZSTD
 #include <zstd.h>
+#else
+#include <zlib.h>
+#endif
 
 #include <chrono>
 #include <filesystem>
@@ -14,16 +18,26 @@
 
 #include "comm/delayed_task.h"
 #include "comm/mmap_util.h"
+#ifdef XLOG_ENABLE_ZSTD
 #include "xlog/log_zstd_buffer.h"
+#else
+#include "xlog/log_zlib_buffer.h"
+#endif
 
 namespace {
 using namespace mars::xlog;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
+#ifdef XLOG_ENABLE_ZSTD
+constexpr unsigned char async_magic = 0x0d;
+constexpr const char* compression_name = "zstd";
+#else
+constexpr unsigned char async_magic = 0x09;
+constexpr const char* compression_name = "zlib";
+#endif
 
 bool contains_compressed_marker(const std::string& data, std::string_view marker) {
     constexpr std::size_t header_size = 73;
-    constexpr unsigned char async_zstd_magic = 0x0d;
     for (std::size_t offset = 0; data.size() - offset > header_size;) {
         std::size_t length = 0;
         for (unsigned i = 0; i < 4; ++i) {
@@ -31,12 +45,13 @@ bool contains_compressed_marker(const std::string& data, std::string_view marker
         }
         if (length >= data.size() - offset - header_size)
             return false;
-        if (static_cast<unsigned char>(data[offset]) == async_zstd_magic) {
+        if (static_cast<unsigned char>(data[offset]) == async_magic) {
+            std::string decoded;
+#ifdef XLOG_ENABLE_ZSTD
             std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> context(ZSTD_createDCtx(), ZSTD_freeDCtx);
             if (!context)
                 return false;
             ZSTD_inBuffer input{data.data() + offset + header_size, length, 0};
-            std::string decoded;
             while (input.pos < input.size) {
                 char buffer[4096];
                 ZSTD_outBuffer output{buffer, sizeof(buffer), 0};
@@ -44,6 +59,25 @@ bool contains_compressed_marker(const std::string& data, std::string_view marker
                     return false;
                 decoded.append(buffer, output.pos);
             }
+#else
+            z_stream stream{};
+            if (inflateInit2(&stream, -MAX_WBITS) != Z_OK)
+                return false;
+            stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data() + offset + header_size));
+            stream.avail_in = static_cast<uInt>(length);
+            do {
+                char buffer[4096];
+                stream.next_out = reinterpret_cast<Bytef*>(buffer);
+                stream.avail_out = sizeof(buffer);
+                const int result = inflate(&stream, Z_NO_FLUSH);
+                if (result != Z_OK && result != Z_STREAM_END)
+                    break;
+                decoded.append(buffer, sizeof(buffer) - stream.avail_out);
+                if (result == Z_STREAM_END)
+                    break;
+            } while (stream.avail_in || stream.avail_out == 0);
+            inflateEnd(&stream);
+#endif
             if (decoded.find(marker) != std::string::npos)
                 return true;
         }
@@ -108,7 +142,11 @@ bool check_mmap_recovery(const fs::path& directory, const fs::path& cache, bool 
         mars::comm::MappedFile file;
         if (!file.Open(mmap_path, buffer_size))
             return false;
+#ifdef XLOG_ENABLE_ZSTD
         LogZstdBuffer buffer(file.data(), buffer_size, true, "", 1);
+#else
+        LogZlibBuffer buffer(file.data(), buffer_size, true, "");
+#endif
         if (!buffer.Write(marker.data(), marker.size()))
             return false;
         used = buffer.GetData().Length();
@@ -181,6 +219,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     fs::remove_all(directory);
-    std::cout << "Verified sync and async zstd log readback, mmap recovery, 16 open/close cycles, and delayed task cancellation\n";
+    std::cout << "Verified sync and async " << compression_name
+              << " log readback, mmap recovery, 16 open/close cycles, and delayed task cancellation\n";
     return 0;
 }

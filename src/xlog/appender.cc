@@ -73,7 +73,9 @@
 
 #include "log_base_buffer.h"
 #include "log_zlib_buffer.h"
+#ifdef XLOG_ENABLE_ZSTD
 #include "log_zstd_buffer.h"
+#endif
 #include "xlogger_appender.h"
 
 #define LOG_EXT "xlog"
@@ -117,6 +119,14 @@ std::string PathToUtf8(const fs::path& path) {
 
 std::string MmapFilePath(const XLogConfig& config) {
     return (config.cachedir_.empty() ? config.logdir_ : config.cachedir_) + "/" + config.nameprefix_ + ".mmap3";
+}
+
+LogBaseBuffer* MakeLogBuffer(void* data, const XLogConfig& config) {
+#ifdef XLOG_ENABLE_ZSTD
+    if (config.compress_mode_ == kZstd)
+        return new LogZstdBuffer(data, kBufferBlockLength, true, config.pub_key_.c_str(), config.compress_level_);
+#endif
+    return new LogZlibBuffer(data, kBufferBlockLength, true, config.pub_key_.c_str());
 }
 
 class ScopeErrno {
@@ -332,25 +342,9 @@ void XloggerAppender::Open(const XLogConfig& _config) {
     tick.gettickcount();
 
     const bool use_mmap = mmap_file_.Open(PathFromUtf8(MmapFilePath(config_)), kBufferBlockLength);
-    if (use_mmap) {
-        if (_config.compress_mode_ == kZstd) {
-            log_buff_ = new LogZstdBuffer(mmap_file_.data(),
-                                          kBufferBlockLength,
-                                          true,
-                                          _config.pub_key_.c_str(),
-                                          _config.compress_level_);
-        } else {
-            log_buff_ = new LogZlibBuffer(mmap_file_.data(), kBufferBlockLength, true, _config.pub_key_.c_str());
-        }
-    } else {
-        char* buffer = new char[kBufferBlockLength]();
-        if (_config.compress_mode_ == kZstd) {
-            log_buff_ =
-                new LogZstdBuffer(buffer, kBufferBlockLength, true, _config.pub_key_.c_str(), _config.compress_level_);
-        } else {
-            log_buff_ = new LogZlibBuffer(buffer, kBufferBlockLength, true, _config.pub_key_.c_str());
-        }
-    }
+    auto heap_buffer = use_mmap ? nullptr : std::make_unique<char[]>(kBufferBlockLength);
+    log_buff_ = MakeLogBuffer(use_mmap ? mmap_file_.data() : heap_buffer.get(), config_);
+    heap_buffer.release();
 
     if (nullptr == log_buff_->GetData().Ptr()) {
         mmap_file_.Close();
@@ -1201,15 +1195,8 @@ void XloggerAppender::TreatMappingAsFileAndFlush(TFileIOAction* _result) {
     fclose(treat_mapping_as_file);
 
     // init and set flag
-    if (config_.compress_mode_ == kZstd) {
-        log_buff_ = new LogZstdBuffer(data.release(),
-                                      kBufferBlockLength,
-                                      true,
-                                      config_.pub_key_.c_str(),
-                                      config_.compress_level_);
-    } else {
-        log_buff_ = new LogZlibBuffer(data.release(), kBufferBlockLength, true, config_.pub_key_.c_str());
-    }
+    log_buff_ = MakeLogBuffer(data.get(), config_);
+    data.release();
 	
     log_close_ = false;
 

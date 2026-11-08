@@ -3,10 +3,15 @@
   "version-string": "0.1.0",
   "builtin-baseline": "0b88aacde46a853151730fbe7d0b7ee45f4b6864",
   "dependencies": [
-    "zstd",
     {
       "name": "zlib",
       "platform": "!windows"
     }
-  ]
+  ],
+  "features": {
+    "zstd": {
+      "description": "Zstandard log compression",
+      "dependencies": ["zstd"]
+    }
+  }
 }

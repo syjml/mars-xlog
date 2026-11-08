@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.preset }}
+    name: ${{ matrix.preset }}${{ matrix.zstd == 'ON' && ' (zstd enabled)' || '' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -34,8 +34,14 @@ jobs:
           - { preset: android-x64, runner: ubuntu-24.04, test: android }
           - { preset: ios-arm64, runner: macos-26, test: build-only }
           - { preset: ios-simulator-arm64, runner: macos-26, test: ios }
+          - { preset: msvc-x64, runner: windows-2022, test: native, zstd: 'ON' }
+          - { preset: linux-x64, runner: ubuntu-24.04, test: native, zstd: 'ON' }
+          - { preset: macos-arm64, runner: macos-26, test: native, zstd: 'ON' }
+          - { preset: android-x64, runner: ubuntu-24.04, test: android, zstd: 'ON' }
+          - { preset: ios-simulator-arm64, runner: macos-26, test: ios, zstd: 'ON' }
     env:
       PRESET: ${{ matrix.preset }}
+      XLOG_ENABLE_ZSTD: ${{ matrix.zstd || 'OFF' }}
       VCPKG_ROOT: ${{ github.workspace }}/.ci-vcpkg
       VCPKG_BINARY_SOURCES: clear;default,readwrite
       ANDROID_NDK_VERSION: '28.2.13676358'
@@ -68,7 +74,7 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ matrix.runner }}-${{ matrix.preset }}-${{ steps.vcpkg.outputs.image }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
+          key: vcpkg-${{ matrix.runner }}-${{ matrix.preset }}-${{ env.XLOG_ENABLE_ZSTD }}-${{ steps.vcpkg.outputs.image }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
           restore-keys: vcpkg-${{ matrix.runner }}-${{ matrix.preset }}-
 
       - name: Bootstrap vcpkg
@@ -97,6 +103,9 @@ jobs:
         shell: pwsh
         run: |
           $command = 'cmake --preset ' + $env:PRESET
+          if ($env:XLOG_ENABLE_ZSTD -eq 'ON') {
+            $command += ' -DXLOG_ENABLE_ZSTD=ON'
+          }
           if ($env:PRESET -ne 'mingw-x64') {
             $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
             $vs = & $vswhere -latest -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -116,7 +125,11 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          cmake --preset "$PRESET"
+          args=()
+          if [[ "$XLOG_ENABLE_ZSTD" == ON ]]; then
+            args+=(-DXLOG_ENABLE_ZSTD=ON)
+          fi
+          cmake --preset "$PRESET" "${args[@]}"
           cmake --build "build/$PRESET" --parallel
 
       - name: Test Linux and macOS

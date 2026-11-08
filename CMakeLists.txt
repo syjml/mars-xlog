@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.21)
+
+option(XLOG_ENABLE_ZSTD "Enable the zstd log compression backend" OFF)
+# vcpkg reads manifest features during project(). A parent project owns its manifest.
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    list(REMOVE_ITEM VCPKG_MANIFEST_FEATURES zstd)
+    if(XLOG_ENABLE_ZSTD)
+        list(APPEND VCPKG_MANIFEST_FEATURES zstd)
+    endif()
+endif()
+
 project(mars_xlog LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -9,7 +19,6 @@ if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Windows|Linux|Darwin|Android|iOS)$")
 endif()
 
 include(GNUInstallDirs)
-find_package(zstd CONFIG REQUIRED)
 
 set(xlog_sources
     src/comm/assert/__assert.c
@@ -25,7 +34,6 @@ set(xlog_sources
     src/xlog/formater.cc
     src/xlog/log_base_buffer.cc
     src/xlog/log_zlib_buffer.cc
-    src/xlog/log_zstd_buffer.cc
     src/xlog/xlogger/loginfo_extract.c
     src/xlog/xlogger/xlogger.cc
     src/xlog/xlogger/xlogger_category.cc
@@ -47,7 +55,12 @@ target_include_directories(xlog
         src
         src/comm
 )
-target_link_libraries(xlog PRIVATE zstd::libzstd)
+if(XLOG_ENABLE_ZSTD)
+    find_package(zstd CONFIG REQUIRED)
+    target_sources(xlog PRIVATE src/xlog/log_zstd_buffer.cc)
+    target_compile_definitions(xlog PRIVATE XLOG_ENABLE_ZSTD=1)
+    target_link_libraries(xlog PRIVATE zstd::libzstd)
+endif()
 
 if(WIN32)
     file(GLOB zlib_sources CONFIGURE_DEPENDS src/comm/windows/zlib/*.c)
@@ -98,14 +111,24 @@ install(FILES src/xlog/crypt/micro-ecc-master/LICENSE.txt
 
 set(xlog_package_dir "${CMAKE_INSTALL_LIBDIR}/cmake/xlog")
 install(EXPORT xlogTargets NAMESPACE xlog:: DESTINATION "${xlog_package_dir}")
-install(FILES cmake/xlogConfig.cmake DESTINATION "${xlog_package_dir}")
+configure_file(cmake/xlogConfig.cmake.in xlogConfig.cmake @ONLY)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/xlogConfig.cmake" DESTINATION "${xlog_package_dir}")
 
 if(PROJECT_IS_TOP_LEVEL)
     include(CTest)
     if(BUILD_TESTING)
         add_executable(xlog_smoke tests/smoke.cpp)
-        target_link_libraries(xlog_smoke PRIVATE xlog::xlog zstd::libzstd)
+        target_link_libraries(xlog_smoke PRIVATE xlog::xlog)
         target_include_directories(xlog_smoke PRIVATE src)
+        if(XLOG_ENABLE_ZSTD)
+            target_compile_definitions(xlog_smoke PRIVATE XLOG_ENABLE_ZSTD=1)
+            target_link_libraries(xlog_smoke PRIVATE zstd::libzstd)
+        elseif(WIN32)
+            target_compile_definitions(xlog_smoke PRIVATE Z_PREFIX)
+            target_include_directories(xlog_smoke PRIVATE src/comm/windows/zlib)
+        else()
+            target_link_libraries(xlog_smoke PRIVATE ZLIB::ZLIB)
+        endif()
         if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
             add_test(NAME xlog.smoke COMMAND xlog_smoke)
             set_tests_properties(xlog.smoke PROPERTIES TIMEOUT 30)

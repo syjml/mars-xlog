@@ -1,0 +1,10 @@
+#ifndef Mars_verinfo_h
+#define Mars_verinfo_h
+
+#define MARS_REVISION "1406c4a"
+#define MARS_PATH "standalone"
+#define MARS_URL "https://github.com/Tencent/mars"
+#define MARS_BUILD_TIME "@XLOG_BUILD_TIME@"
+#define MARS_TAG ""
+
+#endif

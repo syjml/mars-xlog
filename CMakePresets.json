@@ -1,0 +1,66 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "windows-static",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      }
+    },
+    {
+      "name": "windows-x64",
+      "hidden": true,
+      "inherits": "windows-static",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg-x64"
+      }
+    },
+    {
+      "name": "windows-x86",
+      "hidden": true,
+      "inherits": "windows-static",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x86-windows-static",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg-x86"
+      }
+    },
+    {
+      "name": "msvc-x64",
+      "inherits": "windows-x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64"
+    },
+    {
+      "name": "msvc-x86",
+      "inherits": "windows-x86",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "Win32"
+    },
+    {
+      "name": "clang-x64",
+      "inherits": "windows-x64",
+      "generator": "Ninja Multi-Config",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_C_COMPILER_TARGET": "x86_64-pc-windows-msvc",
+        "CMAKE_CXX_COMPILER_TARGET": "x86_64-pc-windows-msvc"
+      }
+    },
+    {
+      "name": "clang-x86",
+      "inherits": "windows-x86",
+      "generator": "Ninja Multi-Config",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_C_COMPILER_TARGET": "i686-pc-windows-msvc",
+        "CMAKE_CXX_COMPILER_TARGET": "i686-pc-windows-msvc"
+      }
+    }
+  ]
+}

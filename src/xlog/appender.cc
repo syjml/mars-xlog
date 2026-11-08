@@ -18,27 +18,23 @@
  */
 
 #ifdef _WIN32
-#define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
 
+#include <inttypes.h>
 #include <stdio.h>
 
 #include "mars/xlog/appender.h"
 
 #ifdef _WIN32
 #ifndef __MINGW32__
-#define PRIdMAX "lld"
 #define snprintf _snprintf
 #undef S_ISDIR
 #define S_ISDIR(m) (((m)&S_IFMT) == S_IFDIR)
 #endif
 #define strcasecmp _stricmp
 #define fileno _fileno
-#else
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
 #endif
 
 #include <assert.h>
@@ -373,7 +369,7 @@ void XloggerAppender::Open(const XLogConfig& _config) {
 
     Write(nullptr, appender_info);
     char logmsg[256] = {0};
-    snprintf(logmsg, sizeof(logmsg), "get mmap time: %" PRIu64, (int64_t)get_mmap_time);
+    snprintf(logmsg, sizeof(logmsg), "get mmap time: %" PRId64, (int64_t)get_mmap_time);
     Write(nullptr, logmsg);
 
     Write(nullptr, "MARS_URL: " MARS_URL);

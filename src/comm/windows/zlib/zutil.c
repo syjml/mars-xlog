@@ -1,6 +1,7 @@
 /* zutil.c -- target dependent utility functions for the compression library
  * Copyright (C) 1995-2005, 2010, 2011, 2012 Jean-loup Gailly.
  * For conditions of distribution and use, see copyright notice in zlib.h
+ * Mars xlog modification: use prototype-style function definitions.
  */
 
 /* @(#) $Id$ */
@@ -154,7 +155,7 @@ void ZLIB_INTERNAL z_error(m) char* m;
 /* exported to allow conversion of error code to string for compress() and
  * uncompress()
  */
-const char* ZEXPORT zError(err) int err;
+const char* ZEXPORT zError(int err)
 { return ERR_MSG(err); }
 
 #if defined(_WIN32_WCE)
@@ -318,17 +319,14 @@ extern voidp calloc OF((uInt items, uInt size));
 extern void free OF((voidpf ptr));
 #endif
 
-voidpf ZLIB_INTERNAL zcalloc(opaque, items, size) voidpf opaque;
-unsigned items;
-unsigned size;
+voidpf ZLIB_INTERNAL zcalloc(voidpf opaque, unsigned items, unsigned size)
 {
     if (opaque)
         items += size - size; /* make compiler happy */
     return sizeof(uInt) > 2 ? (voidpf)malloc(items * size) : (voidpf)calloc(items, size);
 }
 
-void ZLIB_INTERNAL zcfree(opaque, ptr) voidpf opaque;
-voidpf ptr;
+void ZLIB_INTERNAL zcfree(voidpf opaque, voidpf ptr)
 {
     free(ptr);
     if (opaque)

@@ -74,7 +74,7 @@ static uint16_t __GetSeq(bool _is_async) {
 #ifndef XLOG_NO_CRYPT
 static bool Hex2Buffer(const char* _str, size_t _len, unsigned char* _buffer) {
     if (NULL == _str || _len == 0 || _len % 2 != 0) {
-        return -1;
+        return false;
     }
 
     char tmp[3] = {0};

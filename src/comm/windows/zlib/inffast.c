@@ -1,6 +1,7 @@
 /* inffast.c -- fast decoding
  * Copyright (C) 1995-2008, 2010 Mark Adler
  * For conditions of distribution and use, see copyright notice in zlib.h
+ * Mars xlog modification: use prototype-style function definitions.
  */
 
 #include "zutil.h"
@@ -65,8 +66,8 @@
       requires strm->avail_out >= 258 for each loop to avoid checking for
       output space.
  */
-void ZLIB_INTERNAL inflate_fast(strm, start) z_streamp strm;
-unsigned start; /* inflate()'s starting value for strm->avail_out */
+/* inflate()'s starting value for strm->avail_out */
+void ZLIB_INTERNAL inflate_fast(z_streamp strm, unsigned start)
 {
     struct inflate_state FAR* state;
     unsigned char FAR* in;   /* local strm->next_in */

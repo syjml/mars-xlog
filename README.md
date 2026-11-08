@@ -31,6 +31,8 @@ Windows 使用多配置预设时，构建命令加 `--config Release`，可执�
 
 构建 xlog 需要 CMake 3.21 或更新版本，以及支持 C++20 的编译器。设置 `VCPKG_ROOT` 指向已完成 bootstrap 的 vcpkg 目录，首次配置会安装依赖。使用 MSVC 时，安装 VS2022 的「使用 C++ 的桌面开发」工作负载。
 
+默认将编译警告视为错误。需要关闭时，在配置阶段传入 `-DCMAKE_COMPILE_WARNING_AS_ERROR=OFF`。
+
 ```powershell
 cmake --preset msvc-x64
 cmake --build build/msvc-x64 --config Release

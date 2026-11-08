@@ -18,6 +18,7 @@
  */
 
 #include <assert.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 
@@ -29,11 +30,7 @@
 #include "mars/xlog/xloggerbase.h"
 
 #if defined(_WIN32) && !defined(__MINGW32__)
-#define PRIdMAX "lld"
 #define snprintf _snprintf
-#else
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
 #endif
 
 namespace mars {

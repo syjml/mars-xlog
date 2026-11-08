@@ -13,16 +13,23 @@
 #ifndef PROJECT_DEFINE
 #define PROJECT_DEFINE
 
-// #define _POSIX_ 1
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS 1
+#endif
+#ifndef _CRT_NONSTDC_NO_WARNINGS
+#define _CRT_NONSTDC_NO_WARNINGS 1
+#endif
+#ifndef _SCL_SECURE_NO_WARNINGS
+#define _SCL_SECURE_NO_WARNINGS 1
+#endif
 
 #include <basetsd.h>
+#include <inttypes.h>
 #include <io.h>  // for close
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #ifdef __MINGW32__
 #include <direct.h>
-#include <inttypes.h>
 #include <sys/stat.h>
 #ifdef __cplusplus
 // libstdc++ undefines the stdio macros when it first includes <cstdio>.
@@ -79,10 +86,6 @@ int mars_access_utf8(char const* _path, int _model);
 
 #define strdup _strdup
 
-#define _CRT_SECURE_NO_WARNINGS 1
-#define _CRT_NONSTDC_NO_WARNINGS 1
-
-#define _SCL_SECURE_NO_WARNINGS 1
 #ifndef S_ISDIR
 #define S_ISDIR(x) (_S_IFDIR & x)
 #endif
@@ -102,15 +105,8 @@ int mars_access_utf8(char const* _path, int _model);
 #if !defined(WIN32)
 #define sscanf sscanf_s
 #endif
-#define _CRT_SECURE_NO_WARNINGS 1
-#define _CRT_NONSTDC_NO_WARNINGS 1
-#define _SCL_SECURE_NO_WARNINGS 1
 
 typedef SSIZE_T ssize_t;
-#ifndef __MINGW32__
-#define PRIu64 "I64d"
-#define PRIuMAX PRIu64
-#endif
 
 #if defined(WIN32) && !defined(SIZE_T_MAX)
 #define SIZE_T_MAX UINT_MAX

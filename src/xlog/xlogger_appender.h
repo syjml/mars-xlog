@@ -1,7 +1,13 @@
-#include "boost/iostreams/device/mapped_file.hpp"
+#pragma once
+
 #include <atomic>
-#include "comm/thread/condition.h"
-#include "comm/thread/thread.h"
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <thread>
+
+#include "boost/iostreams/device/mapped_file.hpp"
+#include "comm/delayed_task.h"
 #include "mars/xlog/xloggerbase.h"
 #include "mars/xlog/appender.h"
 
@@ -14,7 +20,6 @@ class XloggerAppender {
     static XloggerAppender* NewInstance(const XLogConfig& _config, uint64_t _max_byte_size);
     static XloggerAppender* NewInstance(const XLogConfig& _config, uint64_t _max_byte_size, bool _one_shot);
     static void DelayRelease(XloggerAppender* _appender);
-    static void Release(XloggerAppender*& _appender);
 
     void Open(const XLogConfig& _config);
 
@@ -76,9 +81,8 @@ class XloggerAppender {
     XLogConfig config_;
     LogBaseBuffer* log_buff_ = nullptr;
     boost::iostreams::mapped_file mmap_file_;
-    comm::Thread thread_async_;
-    comm::Mutex mutex_buffer_async_;
-    comm::Mutex mutex_log_file_;
+    std::mutex mutex_buffer_async_;
+    std::mutex mutex_log_file_;
     FILE* logfile_ = nullptr;
     time_t openfiletime_ = 0;
 #ifdef DEBUG
@@ -87,7 +91,9 @@ class XloggerAppender {
     bool consolelog_open_ = false;
 #endif
     std::atomic<bool> log_close_{true};
-    comm::Condition cond_buffer_async_;
+    std::atomic<TAppenderMode> mode_{kAppenderAsync};
+    std::condition_variable cond_buffer_async_;
+    bool flush_requested_ = false;
     uint64_t max_file_size_ = 0;               // 0, will not split log file.
     long max_alive_time_ = 10 * 24 * 60 * 60;  // 10 days in second
 
@@ -95,9 +101,10 @@ class XloggerAppender {
     uint64_t last_tick_ = 0;
     char last_file_path_[1024] = {0};
 
-    std::unique_ptr<comm::Thread> thread_timeout_cache_;
-    std::unique_ptr<comm::Thread> thread_moveold_;
-    std::unique_ptr<comm::Thread> thread_timeout_log_;
+    std::thread thread_async_;
+    std::unique_ptr<comm::DelayedTask> thread_timeout_cache_;
+    std::unique_ptr<comm::DelayedTask> thread_moveold_;
+    std::unique_ptr<comm::DelayedTask> thread_timeout_log_;
 };
 
 }  // namespace xlog

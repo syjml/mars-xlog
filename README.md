@@ -8,7 +8,7 @@
 
 ## Windows 构建
 
-需要 CMake 3.21 或更新版本。设置 `VCPKG_ROOT` 指向已完成 bootstrap 的 vcpkg 目录，首次配置会安装依赖。使用 MSVC 时，安装 VS2022 的「使用 C++ 的桌面开发」工作负载。
+构建 xlog 需要 CMake 3.21 或更新版本，以及支持 C++20 的编译器。设置 `VCPKG_ROOT` 指向已完成 bootstrap 的 vcpkg 目录，首次配置会安装依赖。使用 MSVC 时，安装 VS2022 的「使用 C++ 的桌面开发」工作负载。
 
 ```powershell
 cmake --preset msvc-x64
@@ -39,7 +39,7 @@ ctest --test-dir build/mingw-x64 -C Release --output-on-failure
 
 ## Linux 和 macOS 构建
 
-安装 CMake、Ninja 和支持 C++17 的编译器，设置 `VCPKG_ROOT` 指向已完成 bootstrap 的 vcpkg 目录。macOS 使用 Xcode 工具链。预设默认构建 Release，可以用 `-DCMAKE_BUILD_TYPE=Debug` 切换。
+安装 CMake、Ninja 和支持 C++20 的编译器，设置 `VCPKG_ROOT` 指向已完成 bootstrap 的 vcpkg 目录。macOS 使用 Xcode 工具链。预设默认构建 Release，可以用 `-DCMAKE_BUILD_TYPE=Debug` 切换。
 
 ```sh
 cmake --preset linux-x64
@@ -96,7 +96,7 @@ xcrun simctl spawn booted "$PWD/build/ios-simulator-arm64/xlog_smoke.app/xlog_sm
 | Android | ARM64 和 x86_64 Release | x86_64 Android 模拟器 |
 | iOS | ARM64 真机和模拟器 Release | ARM64 iOS 模拟器 |
 
-日志测试会写入并回读同步日志和异步 zstd 日志。Android ARM64 和 iOS 真机任务验证交叉构建。
+日志测试覆盖同步日志和异步 zstd 日志回读、反复打开关闭，以及关闭时取消待执行的维护任务。Android ARM64 和 iOS 真机任务验证交叉构建。
 
 ## 接入
 

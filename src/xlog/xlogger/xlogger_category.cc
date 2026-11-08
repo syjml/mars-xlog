@@ -1,9 +1,8 @@
 
 #include "xlogger_category.h"
 
+#include <cstdio>
 #include <functional>
-
-#include "comm/thread/thread.h"
 
 namespace mars {
 namespace comm {
@@ -13,14 +12,6 @@ XloggerCategory* XloggerCategory::NewInstance(
     std::function<void(const XLoggerInfo* _info, const char* _log)> _appender_func) {
     return new XloggerCategory(_appender, _appender_func);
 }
-void XloggerCategory::DelayRelease(XloggerCategory* _category) {
-    Thread(std::bind(&__Release, _category)).start_after(5000);
-}
-
-void XloggerCategory::__Release(XloggerCategory* _category) {
-    delete _category;
-}
-
 XloggerCategory::XloggerCategory(uintptr_t _appender,
                                  std::function<void(const XLoggerInfo* _info, const char* _log)> _appender_func)
 : appender_(_appender), appender_func_(_appender_func) {
@@ -49,7 +40,7 @@ void XloggerCategory::VPrint(const XLoggerInfo* _info, const char* _format, va_l
         __WriteImpl(_info, "NULL == _format");
     } else {
         char temp[4096] = {'\0'};
-        vsnprintf(temp, 4096, _format, _list);
+        std::vsnprintf(temp, sizeof(temp), _format, _list);
         __WriteImpl(_info, temp);
     }
 }

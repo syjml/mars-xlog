@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
 project(mars_xlog LANGUAGES C CXX)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Windows|Linux|Darwin|Android|iOS)$")
     message(FATAL_ERROR "Unsupported target platform: ${CMAKE_SYSTEM_NAME}")
 endif()
@@ -36,7 +39,6 @@ configure_file(cmake/verinfo.h.in generated/comm/verinfo.h @ONLY)
 
 add_library(xlog STATIC ${xlog_sources})
 add_library(xlog::xlog ALIAS xlog)
-target_compile_features(xlog PUBLIC cxx_std_17)
 target_include_directories(xlog
     PUBLIC
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -107,6 +109,7 @@ if(PROJECT_IS_TOP_LEVEL)
     if(BUILD_TESTING)
         add_executable(xlog_smoke tests/smoke.cpp)
         target_link_libraries(xlog_smoke PRIVATE xlog::xlog zstd::libzstd)
+        target_include_directories(xlog_smoke PRIVATE src)
         if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
             add_test(NAME xlog.smoke COMMAND xlog_smoke)
             set_tests_properties(xlog.smoke PROPERTIES TIMEOUT 30)

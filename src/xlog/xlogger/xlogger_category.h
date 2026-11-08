@@ -13,12 +13,10 @@ class XloggerCategory {
  public:
     static XloggerCategory* NewInstance(uintptr_t _appender,
                                         std::function<void(const XLoggerInfo* _info, const char* _log)> _appender_func);
-    static void DelayRelease(XloggerCategory* _category);
 
  private:
     XloggerCategory(uintptr_t _appender,
                     std::function<void(const XLoggerInfo* _info, const char* _log)> _appender_func);
-    static void __Release(XloggerCategory* _category);
 
  public:
     intptr_t GetAppender();

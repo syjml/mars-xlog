@@ -21,6 +21,8 @@
 #ifndef COMM_STRUTIL_H_
 #define COMM_STRUTIL_H_
 
+#include <stdint.h>
+
 #include <sstream>
 #include <string>
 #include <vector>

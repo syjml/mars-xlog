@@ -21,9 +21,11 @@
 
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
+#include <utility>
 
-#include "comm/thread/lock.h"
-#include "comm/thread/mutex.h"
+#include "comm/delayed_task.h"
 #include "xlog/xlogger/xlogger_category.h"
 #include "xlogger_appender.h"
 
@@ -31,8 +33,8 @@ using namespace mars::comm;
 namespace mars {
 namespace xlog {
 
-static Mutex& GetGlobalMutex() {
-    static Mutex sg_mutex;
+static std::mutex& GetGlobalMutex() {
+    static std::mutex sg_mutex;
     return sg_mutex;
 }
 
@@ -46,7 +48,7 @@ XloggerCategory* NewXloggerInstance(const XLogConfig& _config, TLogLevel _level)
         return nullptr;
     }
 
-    ScopedLock lock(GetGlobalMutex());
+    std::unique_lock lock(GetGlobalMutex());
     auto it = GetGlobalInstanceMap().find(_config.nameprefix_);
     if (it != GetGlobalInstanceMap().end()) {
         return it->second;
@@ -67,7 +69,7 @@ mars::comm::XloggerCategory* GetXloggerInstance(const char* _nameprefix) {
         return nullptr;
     }
 
-    ScopedLock lock(GetGlobalMutex());
+    std::unique_lock lock(GetGlobalMutex());
     auto it = GetGlobalInstanceMap().find(_nameprefix);
     if (it != GetGlobalInstanceMap().end()) {
         return it->second;
@@ -81,17 +83,17 @@ void ReleaseXloggerInstance(const char* _nameprefix) {
         return;
     }
 
-    ScopedLock lock(GetGlobalMutex());
+    std::unique_lock lock(GetGlobalMutex());
     auto it = GetGlobalInstanceMap().find(_nameprefix);
     if (it == GetGlobalInstanceMap().end()) {
         return;
     }
 
-    XloggerCategory* category = it->second;
-    XloggerAppender* appender = reinterpret_cast<XloggerAppender*>(category->GetAppender());
-    XloggerAppender::DelayRelease(appender);
-    XloggerCategory::DelayRelease(category);
+    std::unique_ptr<XloggerCategory> category(it->second);
+    std::unique_ptr<XloggerAppender> appender(reinterpret_cast<XloggerAppender*>(category->GetAppender()));
     GetGlobalInstanceMap().erase(it);
+    appender->Close();
+    DeferRelease(std::make_pair(std::move(appender), std::move(category)));
 }
 
 void XloggerWrite(uintptr_t _instance_ptr, const XLoggerInfo* _info, const char* _log) {
@@ -153,7 +155,7 @@ void Flush(uintptr_t _instance_ptr, bool _is_sync) {
 
 void FlushAll(bool _is_sync) {
     _is_sync ? appender_flush_sync() : appender_flush();
-    ScopedLock lock(GetGlobalMutex());
+    std::unique_lock lock(GetGlobalMutex());
     auto& xmap = GetGlobalInstanceMap();
     // loop through all categories
     for (auto it = xmap.begin(); it != xmap.end(); ++it) {

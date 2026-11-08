@@ -32,10 +32,13 @@
 #include "mars/xlog/appender.h"
 
 #ifdef _WIN32
+#ifndef __MINGW32__
 #define PRIdMAX "lld"
 #define snprintf _snprintf
-#define strcasecmp _stricmp
+#undef S_ISDIR
 #define S_ISDIR(m) (((m)&S_IFMT) == S_IFDIR)
+#endif
+#define strcasecmp _stricmp
 #define fileno _fileno
 #else
 #define __STDC_FORMAT_MACROS

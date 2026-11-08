@@ -21,11 +21,7 @@
 #define LOGZLIBBUFFER_H_
 
 #include <stdint.h>
-#ifdef _WIN32
-#include <zlib/zlib.h>
-#else
 #include <zlib.h>
-#endif
 
 #include <string>
 

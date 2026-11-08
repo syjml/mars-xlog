@@ -7,7 +7,7 @@
 
 #include <stddef.h>
 
-#include "zlib/zconf.h"
+#include "windows/zlib/zconf.h"
 
 #define BASE 65521UL /* largest prime smaller than 65536 */
 #define NMAX 5552

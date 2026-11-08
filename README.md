@@ -8,7 +8,7 @@
 
 ## Windows 构建
 
-安装 VS2022 的「使用 C++ 的桌面开发」工作负载和 CMake 3.21 或更新版本，设置 `VCPKG_ROOT` 指向已完成 bootstrap 的 vcpkg 目录。首次配置会安装所需依赖。
+需要 CMake 3.21 或更新版本。设置 `VCPKG_ROOT` 指向已完成 bootstrap 的 vcpkg 目录，首次配置会安装依赖。使用 MSVC 时，安装 VS2022 的「使用 C++ 的桌面开发」工作负载。
 
 ```powershell
 cmake --preset msvc-x64
@@ -25,7 +25,17 @@ cmake --build build/clang-x64 --config Release
 ctest --test-dir build/clang-x64 -C Release --output-on-failure
 ```
 
-Win32 对应 `msvc-x86` 和 `clang-x86`，Clang 需要在 x86 Native Tools Command Prompt 中配置。调试版使用 `--config Debug`。这些预设使用 MSVC ABI 和静态 CRT，Release 对应 `/MT`，Debug 对应 `/MTd`。clang-cl 与 MSVC 按架构共享 vcpkg 安装目录。
+Win32 对应 `msvc-x86` 和 `clang-x86`，Clang 需要在 x86 Native Tools Command Prompt 中配置。在 x64 开发者命令行中可使用 `clang-gnu-x64` 预设，通过 `clang` 和 `clang++` 的 GNU 风格命令行生成 MSVC ABI 的库。上述预设使用静态 CRT，Release 对应 `/MT`，Debug 对应 `/MTd`，按架构共享 vcpkg 安装目录。
+
+使用 MinGW-w64 时，把包含 `x86_64-w64-mingw32-gcc` 和 `x86_64-w64-mingw32-g++` 的目录及 Ninja 加入 `PATH`，并设置 `VCPKG_ROOT`。例如可使用 MSYS2 UCRT64 的 GCC。`mingw-x64` 预设使用 vcpkg 的 `x64-mingw-static` triplet，应用应使用相同的工具链和运行库。
+
+```powershell
+cmake --preset mingw-x64
+cmake --build build/mingw-x64 --config Release
+ctest --test-dir build/mingw-x64 -C Release --output-on-failure
+```
+
+调试版使用 `--config Debug`，运行 CTest 时使用 `-C Debug`。自定义工具链可直接通过 CMake 配置，vcpkg triplet 应与目标架构、ABI 和运行库匹配。
 
 ## Linux 和 macOS 构建
 
@@ -80,7 +90,7 @@ xcrun simctl spawn booted "$PWD/build/ios-simulator-arm64/xlog_smoke.app/xlog_sm
 
 | 平台 | 构建 | 日志测试 |
 | --- | --- | --- |
-| Windows | VS2022 和 clang-cl，x64 和 x86，Release 和 Debug | CTest |
+| Windows | VS2022 和 clang-cl（x64、x86），GNU 风格 Clang 和 MinGW GCC（x64），Release 和 Debug | CTest |
 | Linux | x64 Release | CTest |
 | macOS | ARM64 Release | CTest |
 | Android | ARM64 和 x86_64 Release | x86_64 Android 模拟器 |

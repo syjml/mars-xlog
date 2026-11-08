@@ -28,7 +28,7 @@
 #include "xlog/xlogger/loginfo_extract.h"
 #include "mars/xlog/xloggerbase.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__MINGW32__)
 #define PRIdMAX "lld"
 #define snprintf _snprintf
 #else

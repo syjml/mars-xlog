@@ -26,6 +26,8 @@ jobs:
           - { preset: msvc-x86, runner: windows-2022, test: native }
           - { preset: clang-x64, runner: windows-2022, test: native }
           - { preset: clang-x86, runner: windows-2022, test: native }
+          - { preset: clang-gnu-x64, runner: windows-2022, test: native }
+          - { preset: mingw-x64, runner: windows-2022, test: native }
           - { preset: linux-x64, runner: ubuntu-24.04, test: native }
           - { preset: macos-arm64, runner: macos-26, test: native }
           - { preset: android-arm64, runner: ubuntu-24.04, test: build-only }
@@ -94,12 +96,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
-          $vs = & $vswhere -latest -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vs) { throw 'Visual Studio 2022 C++ tools were not found' }
-          $vars = if ($env:PRESET.EndsWith('-x86')) { 'vcvarsamd64_x86.bat' } else { 'vcvars64.bat' }
-          $vcvars = Join-Path $vs "VC/Auxiliary/Build/$vars"
-          $command = 'call "' + $vcvars + '" && set "VCPKG_ROOT=' + $env:VCPKG_ROOT + '" && cmake --preset ' + $env:PRESET
+          $command = 'cmake --preset ' + $env:PRESET
+          if ($env:PRESET -ne 'mingw-x64') {
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+            $vs = & $vswhere -latest -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (-not $vs) { throw 'Visual Studio 2022 C++ tools were not found' }
+            $vars = if ($env:PRESET.EndsWith('-x86')) { 'vcvarsamd64_x86.bat' } else { 'vcvars64.bat' }
+            $vcvars = Join-Path $vs "VC/Auxiliary/Build/$vars"
+            $command = 'call "' + $vcvars + '" && set "VCPKG_ROOT=' + $env:VCPKG_ROOT + '" && ' + $command
+          }
           foreach ($config in 'Release', 'Debug') {
             $command += " && cmake --build build/$env:PRESET --config $config --parallel"
             $command += " && ctest --test-dir build/$env:PRESET -C $config --output-on-failure --no-tests=error"

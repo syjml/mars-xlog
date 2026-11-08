@@ -1,9 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(mars_xlog LANGUAGES C CXX)
 
-if(WIN32 AND NOT MSVC)
-    message(FATAL_ERROR "Windows builds require MSVC or clang-cl")
-elseif(NOT CMAKE_SYSTEM_NAME MATCHES "^(Windows|Linux|Darwin|Android|iOS)$")
+if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Windows|Linux|Darwin|Android|iOS)$")
     message(FATAL_ERROR "Unsupported target platform: ${CMAKE_SYSTEM_NAME}")
 endif()
 
@@ -57,14 +55,22 @@ if(WIN32)
     target_sources(xlog PRIVATE ${zlib_sources}
         src/comm/adler32.c
         src/comm/windows/projdef.cc
-        src/comm/windows/sys/time.c
-        src/comm/windows/unistd.cpp
         src/comm/windows/xlogger_threadinfo.cpp
         src/xlog/console_log_win.cc
     )
     target_compile_definitions(xlog PRIVATE WIN32 UNICODE _UNICODE NOMINMAX _LIB BOOST_ALL_NO_LIB Z_PREFIX)
-    target_compile_options(xlog PRIVATE /utf-8 "/FI${CMAKE_CURRENT_SOURCE_DIR}/src/comm/projdef.h")
-    target_include_directories(xlog PRIVATE src/comm/windows src/comm/windows/zlib include/mars/comm/windows)
+    foreach(lang IN ITEMS C CXX)
+        if(CMAKE_${lang}_COMPILER_ID STREQUAL "MSVC" OR CMAKE_${lang}_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            target_compile_options(xlog PRIVATE "$<$<COMPILE_LANGUAGE:${lang}>:/utf-8;/FI${CMAKE_CURRENT_SOURCE_DIR}/src/comm/projdef.h>")
+        else()
+            target_compile_options(xlog PRIVATE "$<$<COMPILE_LANGUAGE:${lang}>:-include;${CMAKE_CURRENT_SOURCE_DIR}/src/comm/projdef.h>")
+        endif()
+    endforeach()
+    target_include_directories(xlog PRIVATE src/comm/windows/zlib)
+    if(NOT MINGW)
+        target_sources(xlog PRIVATE src/comm/windows/sys/time.c src/comm/windows/unistd.cpp)
+        target_include_directories(xlog PRIVATE src/comm/windows include/mars/comm/windows)
+    endif()
     target_link_libraries(xlog PRIVATE advapi32 crypt32)
 else()
     find_package(Threads REQUIRED)

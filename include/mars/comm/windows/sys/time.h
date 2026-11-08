@@ -13,6 +13,9 @@
 #ifndef __SYS__TIME_H__
 #define __SYS__TIME_H__
 
+#ifdef __MINGW32__
+#include <sys/time.h>
+#else
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,4 +49,5 @@ int gettimeofday(struct timeval* tv, struct timezone* tz);
 }
 #endif // __cplusplus
 
+#endif // __MINGW32__
 #endif // __SYS__TIME_H__

@@ -16,6 +16,7 @@
 #include "assert/__assert.h"
 #include "thread/mutex.h"
 #include "thread/spinlock.h"
+#include "time_utils.h"
 #include "unistd.h"
 
 namespace mars {

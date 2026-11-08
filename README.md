@@ -74,6 +74,20 @@ xcrun simctl spawn booted "$PWD/build/ios-simulator-arm64/xlog_smoke.app/xlog_sm
 
 最后一条命令需要已启动的 iOS 模拟器。真机应用通过自己的签名和部署流程运行。
 
+## CI
+
+[GitHub Actions](.github/workflows/ci.yml) 在 `main` 分支推送、Pull Request 和手动触发时运行。CI 使用 `vcpkg.json` 的基线检出 vcpkg，并按 runner 镜像和构建预设缓存 vcpkg 二进制包。
+
+| 平台 | 构建 | 日志测试 |
+| --- | --- | --- |
+| Windows | VS2022 和 clang-cl，x64 和 x86，Release 和 Debug | CTest |
+| Linux | x64 Release | CTest |
+| macOS | ARM64 Release | CTest |
+| Android | ARM64 和 x86_64 Release | x86_64 Android 模拟器 |
+| iOS | ARM64 真机和模拟器 Release | ARM64 iOS 模拟器 |
+
+日志测试会写入并回读同步日志和异步 zstd 日志。Android ARM64 和 iOS 真机任务验证交叉构建。
+
 ## 接入
 
 在使用同一 vcpkg 工具链的 CMake 项目里添加本项目源码，并在应用的 vcpkg manifest 中声明 [相同依赖](vcpkg.json)。

@@ -102,6 +102,15 @@
       }
     },
     {
+      "name": "android-x64",
+      "inherits": "android-arm64",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-android",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg-android-x64",
+        "ANDROID_ABI": "x86_64"
+      }
+    },
+    {
       "name": "ios-arm64",
       "inherits": "unix",
       "cacheVariables": {

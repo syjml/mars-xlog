@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.preset }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { preset: msvc-x64, runner: windows-2022, test: native }
+          - { preset: msvc-x86, runner: windows-2022, test: native }
+          - { preset: clang-x64, runner: windows-2022, test: native }
+          - { preset: clang-x86, runner: windows-2022, test: native }
+          - { preset: linux-x64, runner: ubuntu-24.04, test: native }
+          - { preset: macos-arm64, runner: macos-26, test: native }
+          - { preset: android-arm64, runner: ubuntu-24.04, test: build-only }
+          - { preset: android-x64, runner: ubuntu-24.04, test: android }
+          - { preset: ios-arm64, runner: macos-26, test: build-only }
+          - { preset: ios-simulator-arm64, runner: macos-26, test: ios }
+    env:
+      PRESET: ${{ matrix.preset }}
+      VCPKG_ROOT: ${{ github.workspace }}/.ci-vcpkg
+      VCPKG_BINARY_SOURCES: clear;default,readwrite
+      ANDROID_NDK_VERSION: '28.2.13676358'
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Read vcpkg baseline
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          "ref=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
+          "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+          "VCPKG_DEFAULT_BINARY_CACHE=$env:RUNNER_TEMP/vcpkg-cache" >> $env:GITHUB_ENV
+
+      - name: Check out vcpkg
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ steps.vcpkg.outputs.ref }}
+          path: .ci-vcpkg
+          # Versioned ports can reference trees older than the baseline commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ matrix.runner }}-${{ matrix.preset }}-${{ steps.vcpkg.outputs.image }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
+          restore-keys: vcpkg-${{ matrix.runner }}-${{ matrix.preset }}-
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          if ($IsWindows) {
+            & (Join-Path $env:VCPKG_ROOT 'bootstrap-vcpkg.bat') -disableMetrics
+          } else {
+            & bash (Join-Path $env:VCPKG_ROOT 'bootstrap-vcpkg.sh') -disableMetrics
+          }
+          exit $LASTEXITCODE
+
+      - name: Set up Android NDK
+        if: startsWith(matrix.preset, 'android-')
+        shell: bash
+        run: |
+          ndk="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          if [[ ! -f "$ndk/source.properties" ]]; then
+            sdkmanager --install "ndk;$ANDROID_NDK_VERSION"
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+
+      - name: Build and test Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vs = & $vswhere -latest -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio 2022 C++ tools were not found' }
+          $vars = if ($env:PRESET.EndsWith('-x86')) { 'vcvarsamd64_x86.bat' } else { 'vcvars64.bat' }
+          $vcvars = Join-Path $vs "VC/Auxiliary/Build/$vars"
+          $command = 'call "' + $vcvars + '" && set "VCPKG_ROOT=' + $env:VCPKG_ROOT + '" && cmake --preset ' + $env:PRESET
+          foreach ($config in 'Release', 'Debug') {
+            $command += " && cmake --build build/$env:PRESET --config $config --parallel"
+            $command += " && ctest --test-dir build/$env:PRESET -C $config --output-on-failure --no-tests=error"
+          }
+          cmd.exe /d /c $command
+          exit $LASTEXITCODE
+
+      - name: Configure and build
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cmake --preset "$PRESET"
+          cmake --build "build/$PRESET" --parallel
+
+      - name: Test Linux and macOS
+        if: runner.os != 'Windows' && matrix.test == 'native'
+        shell: bash
+        run: ctest --test-dir "build/$PRESET" --output-on-failure --no-tests=error
+
+      - name: Test on an Android emulator
+        if: matrix.test == 'android'
+        timeout-minutes: 15
+        shell: bash
+        run: bash .github/scripts/android-smoke.sh "build/$PRESET/xlog_smoke"
+
+      - name: Test on an iOS simulator
+        if: matrix.test == 'ios'
+        timeout-minutes: 10
+        shell: bash
+        run: bash .github/scripts/ios-smoke.sh "$PWD/build/$PRESET/xlog_smoke.app/xlog_smoke"

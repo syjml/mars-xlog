@@ -42,6 +42,7 @@ jobs:
     env:
       PRESET: ${{ matrix.preset }}
       XLOG_ENABLE_ZSTD: ${{ matrix.zstd || 'OFF' }}
+      XLOG_BUILD_TOOL: ${{ matrix.test == 'native' && matrix.zstd == 'ON' && 'ON' || 'OFF' }}
       VCPKG_ROOT: ${{ github.workspace }}/.ci-vcpkg
       VCPKG_BINARY_SOURCES: clear;default,readwrite
       ANDROID_NDK_VERSION: '28.2.13676358'
@@ -106,6 +107,9 @@ jobs:
           if ($env:XLOG_ENABLE_ZSTD -eq 'ON') {
             $command += ' -DXLOG_ENABLE_ZSTD=ON'
           }
+          if ($env:XLOG_BUILD_TOOL -eq 'ON') {
+            $command += ' -DXLOG_BUILD_TOOL=ON'
+          }
           if ($env:PRESET -ne 'mingw-x64') {
             $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
             $vs = & $vswhere -latest -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -128,6 +132,9 @@ jobs:
           args=()
           if [[ "$XLOG_ENABLE_ZSTD" == ON ]]; then
             args+=(-DXLOG_ENABLE_ZSTD=ON)
+          fi
+          if [[ "$XLOG_BUILD_TOOL" == ON ]]; then
+            args+=(-DXLOG_BUILD_TOOL=ON)
           fi
           cmake --preset "$PRESET" "${args[@]}"
           cmake --build "build/$PRESET" --parallel

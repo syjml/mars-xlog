@@ -10,7 +10,7 @@
   ],
   "features": {
     "zstd": {
-      "description": "Zstandard log compression",
+      "description": "Zstandard support for the encoder or command-line decoder",
       "dependencies": ["zstd"]
     }
   }

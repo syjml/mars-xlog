@@ -1,10 +1,11 @@
 cmake_minimum_required(VERSION 3.21)
 
 option(XLOG_ENABLE_ZSTD "Enable the zstd log compression backend" OFF)
+option(XLOG_BUILD_TOOL "Build the xlog-tool command-line utility" OFF)
 # vcpkg reads manifest features during project(). A parent project owns its manifest.
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     list(REMOVE_ITEM VCPKG_MANIFEST_FEATURES zstd)
-    if(XLOG_ENABLE_ZSTD)
+    if(XLOG_ENABLE_ZSTD OR XLOG_BUILD_TOOL)
         list(APPEND VCPKG_MANIFEST_FEATURES zstd)
     endif()
 endif()
@@ -19,6 +20,9 @@ if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Windows|Linux|Darwin|Android|iOS)$")
 endif()
 
 include(GNUInstallDirs)
+if(XLOG_ENABLE_ZSTD OR XLOG_BUILD_TOOL)
+    find_package(zstd CONFIG REQUIRED)
+endif()
 
 set(xlog_sources
     src/comm/assert/__assert.c
@@ -56,7 +60,6 @@ target_include_directories(xlog
         src/comm
 )
 if(XLOG_ENABLE_ZSTD)
-    find_package(zstd CONFIG REQUIRED)
     target_sources(xlog PRIVATE src/xlog/log_zstd_buffer.cc)
     target_compile_definitions(xlog PRIVATE XLOG_ENABLE_ZSTD=1)
     target_link_libraries(xlog PRIVATE zstd::libzstd)
@@ -102,6 +105,21 @@ else()
     endif()
 endif()
 
+if(XLOG_BUILD_TOOL)
+    add_executable(xlog_tool tools/xlog_tool.cpp)
+    set_target_properties(xlog_tool PROPERTIES OUTPUT_NAME xlog-tool)
+    target_include_directories(xlog_tool PRIVATE src)
+    target_link_libraries(xlog_tool PRIVATE xlog::xlog zstd::libzstd)
+    if(WIN32)
+        target_compile_definitions(xlog_tool PRIVATE NOMINMAX Z_PREFIX)
+        target_include_directories(xlog_tool PRIVATE src/comm/windows/zlib)
+        target_link_libraries(xlog_tool PRIVATE advapi32 shell32)
+    else()
+        target_link_libraries(xlog_tool PRIVATE ZLIB::ZLIB)
+    endif()
+    install(TARGETS xlog_tool RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
+
 install(TARGETS xlog EXPORT xlogTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}/$<CONFIG>")
 install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     FILES_MATCHING PATTERN "*.h")
@@ -132,6 +150,20 @@ if(PROJECT_IS_TOP_LEVEL)
         if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
             add_test(NAME xlog.smoke COMMAND xlog_smoke)
             set_tests_properties(xlog.smoke PROPERTIES TIMEOUT 30)
+        endif()
+        if(XLOG_BUILD_TOOL AND NOT CMAKE_CROSSCOMPILING)
+            add_executable(xlog_tool_fixture tests/tool_fixture.cpp)
+            target_link_libraries(xlog_tool_fixture PRIVATE xlog::xlog)
+            if(XLOG_ENABLE_ZSTD)
+                target_compile_definitions(xlog_tool_fixture PRIVATE XLOG_ENABLE_ZSTD=1)
+            endif()
+            add_test(NAME xlog.tool COMMAND "${CMAKE_COMMAND}"
+                "-DTOOL=$<TARGET_FILE:xlog_tool>"
+                "-DFIXTURE=$<TARGET_FILE:xlog_tool_fixture>"
+                "-DWORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}"
+                "-DENCODER_HAS_ZSTD=${XLOG_ENABLE_ZSTD}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/tool_roundtrip.cmake")
+            set_tests_properties(xlog.tool PROPERTIES TIMEOUT 30)
         endif()
     endif()
 endif()

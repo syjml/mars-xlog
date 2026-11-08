@@ -8,7 +8,24 @@
 
 ## 压缩选项
 
-`XLOG_ENABLE_ZSTD` 默认关闭。独立构建时 vcpkg 跳过 zstd，新日志使用 zlib。已有代码设置 `compress_mode_ = kZstd` 时也会回退到 zlib。需要 zstd 时，在构建预设后加 `-DXLOG_ENABLE_ZSTD=ON`，再将 `compress_mode_` 设为 `kZstd`。安装后的 `xlog::xlog` 自动按构建选项解析依赖。
+`XLOG_ENABLE_ZSTD` 默认关闭。默认的独立构建会跳过 vcpkg 的 zstd 安装，新日志使用 zlib。已有代码设置 `compress_mode_ = kZstd` 时也会回退到 zlib。需要写 zstd 日志时，在构建预设后加 `-DXLOG_ENABLE_ZSTD=ON`，再将 `compress_mode_` 设为 `kZstd`。安装后的 `xlog::xlog` 自动按构建选项解析依赖。
+
+## 密钥和离线解码
+
+Windows、Linux 和 macOS 可用 `-DXLOG_BUILD_TOOL=ON` 构建 `xlog-tool`。工具默认关闭，启用时 vcpkg 会为解码器安装 zstd。工具始终支持 zlib 和 zstd 解码，日志库是否写 zstd 仍由 `XLOG_ENABLE_ZSTD` 控制。CMake 安装会将工具放入 `bin`。
+
+```sh
+cmake --preset linux-x64 -DXLOG_BUILD_TOOL=ON
+cmake --build build/linux-x64 --target xlog_tool
+build/linux-x64/xlog-tool keygen xlog-private.hex
+build/linux-x64/xlog-tool decode xlog-private.hex app.xlog app.log
+```
+
+Windows 使用多配置预设时，构建命令加 `--config Release`，可执行文件位于 `build/<preset>/Release/xlog-tool.exe`。
+
+`keygen` 把 secp256k1 私钥写入新文件，格式为 64 个十六进制字符。工具在 POSIX 上使用 `0600`，在 Windows 上为新文件设置仅向所有者授予访问权的 ACL。终端输出 128 个十六进制字符的公钥，可直接填入 `XLogConfig::pub_key_`。客户端选择 `kAppenderAsync` 才会加密正文，私钥留在离线解码端。
+
+`decode` 从私钥文件读取密钥，逐条解码当前格式的 `.xlog`，并输出文本日志。它也能处理同一文件中的同步和未加密记录。两个命令都要求输出路径尚不存在。当前 xlog 加密格式没有认证标签，解码结果无法用于验证日志的真实性。
 
 ## Windows 构建
 
@@ -104,7 +121,7 @@ xcrun simctl spawn booted "$PWD/build/ios-simulator-arm64/xlog_smoke.app/xlog_sm
 
 ## 接入
 
-在使用同一 vcpkg 工具链的 CMake 项目里添加本项目源码，并在应用自己的 vcpkg manifest 中声明所需依赖。非 Windows 目标需要 `zlib`，启用 `XLOG_ENABLE_ZSTD` 时还需要 `zstd`。
+在使用同一 vcpkg 工具链的 CMake 项目里添加本项目源码，并在应用自己的 vcpkg manifest 中声明所需依赖。非 Windows 目标需要 `zlib`。启用 `XLOG_ENABLE_ZSTD` 或 `XLOG_BUILD_TOOL` 时还需要 `zstd`。
 
 ```cmake
 add_subdirectory(path/to/mars-xlog)

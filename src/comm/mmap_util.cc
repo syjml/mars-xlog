@@ -19,71 +19,91 @@
 
 #include "mmap_util.h"
 
-#include <stdio.h>
+#include <algorithm>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
-
-#include "boost/filesystem.hpp"
-
-bool IsMmapFileOpenSucc(const boost::iostreams::mapped_file& _mmmap_file) {
-    return !_mmmap_file.operator!() && _mmmap_file.is_open();
-}
-
-bool OpenMmapFile(const char* _filepath, unsigned int _size, boost::iostreams::mapped_file& _mmmap_file) {
-    if (NULL == _filepath || 0 == strnlen(_filepath, 128) || 0 == _size) {
-        return false;
-    }
-
-    if (IsMmapFileOpenSucc(_mmmap_file)) {
-        CloseMmapFile(_mmmap_file);
-    }
-
-    if (_mmmap_file.is_open() && _mmmap_file.operator!()) {
-        return false;
-    }
-
-    boost::iostreams::basic_mapped_file_params<boost::filesystem::path> param;
-    param.path = boost::filesystem::path(_filepath);
-    param.flags = boost::iostreams::mapped_file_base::readwrite;
-
-    bool file_exist = boost::filesystem::exists(_filepath);
-    if (!file_exist) {
-        param.new_file_size = _size;
-    }
-
-    _mmmap_file.open(param);
-
-    bool is_open = IsMmapFileOpenSucc(_mmmap_file);
-#ifndef _WIN32
-    if (!file_exist && is_open) {
-        // Extending a file with ftruncate, thus creating a big hole, and then filling the hole by mod-ifying a shared
-        // mmap() can lead to SIGBUS when no space left the boost library uses ftruncate, so we pre-allocate the file's
-        // backing store by writing zero.
-        FILE* file = fopen(_filepath, "rb+");
-        if (NULL == file) {
-            _mmmap_file.close();
-            boost::filesystem::remove(_filepath);
-            return false;
-        }
-
-        char* zero_data = new char[_size];
-        memset(zero_data, 0, _size);
-
-        if (_size != fwrite(zero_data, sizeof(char), _size, file)) {
-            _mmmap_file.close();
-            fclose(file);
-            boost::filesystem::remove(_filepath);
-            delete[] zero_data;
-            return false;
-        }
-        fclose(file);
-        delete[] zero_data;
-    }
 #endif
-    return is_open;
+
+namespace mars::comm {
+
+MappedFile::~MappedFile() {
+    Close();
 }
 
-void CloseMmapFile(boost::iostreams::mapped_file& _mmmap_file) {
-    if (_mmmap_file.is_open()) {
-        _mmmap_file.close();
+bool MappedFile::Open(const std::filesystem::path& path, unsigned int size) {
+    Close();
+    if (path.empty() || size == 0)
+        return false;
+
+    // Preserve existing log bytes and allocate any missing space before mapping it.
+    const char zeros[4096]{};
+#ifdef _WIN32
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+
+    LARGE_INTEGER end{};
+    bool ready = SetFilePointerEx(file, end, &end, FILE_END);
+    for (auto length = end.QuadPart; ready && length < size;) {
+        const DWORD chunk = std::min<DWORD>(sizeof(zeros), size - static_cast<unsigned int>(length));
+        DWORD written = 0;
+        ready = WriteFile(file, zeros, chunk, &written, nullptr) && written != 0;
+        length += written;
     }
+    if (ready) {
+        HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READWRITE, 0, size, nullptr);
+        if (mapping) {
+            data_ = static_cast<char*>(MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, size));
+            CloseHandle(mapping);
+        }
+    }
+    CloseHandle(file);
+#else
+    const int file = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    if (file < 0)
+        return false;
+
+    struct stat info{};
+    bool ready = fstat(file, &info) == 0 && S_ISREG(info.st_mode);
+    for (off_t length = info.st_size; ready && length < size;) {
+        const auto chunk = std::min<std::size_t>(sizeof(zeros), size - static_cast<unsigned int>(length));
+        const auto written = pwrite(file, zeros, chunk, length);
+        if (written < 0 && errno == EINTR)
+            continue;
+        ready = written > 0;
+        if (ready)
+            length += written;
+    }
+    if (ready) {
+        void* view = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
+        if (view != MAP_FAILED) {
+            data_ = static_cast<char*>(view);
+            size_ = size;
+        }
+    }
+    close(file);
+#endif
+    return data_ != nullptr;
 }
+
+void MappedFile::Close() {
+    if (!data_)
+        return;
+#ifdef _WIN32
+    UnmapViewOfFile(data_);
+#else
+    munmap(data_, size_);
+    size_ = 0;
+#endif
+    data_ = nullptr;
+}
+
+}  // namespace mars::comm

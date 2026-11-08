@@ -6,8 +6,8 @@
 #include <mutex>
 #include <thread>
 
-#include "boost/iostreams/device/mapped_file.hpp"
 #include "comm/delayed_task.h"
+#include "comm/mmap_util.h"
 #include "mars/xlog/xloggerbase.h"
 #include "mars/xlog/appender.h"
 
@@ -80,7 +80,7 @@ class XloggerAppender {
  private:
     XLogConfig config_;
     LogBaseBuffer* log_buff_ = nullptr;
-    boost::iostreams::mapped_file mmap_file_;
+    comm::MappedFile mmap_file_;
     std::mutex mutex_buffer_async_;
     std::mutex mutex_log_file_;
     FILE* logfile_ = nullptr;

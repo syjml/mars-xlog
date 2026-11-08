@@ -48,8 +48,6 @@ int mars_access_utf8(char const* _path, int _model);
 
 #undef fopen
 #define fopen mars_fopen_utf8
-//#undef remove
-//#define remove mars_remove_utf8 // boost::filesystem::detail::remove compile error
 
 #ifdef WINAPI_FAMILY_PARTITION
 #include <winapifamily.h>

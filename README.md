@@ -2,7 +2,7 @@
 
 从 Tencent Mars 提取的独立 C++ 静态库，源自 [Mars 6aa5b56](https://github.com/Tencent/mars/tree/6aa5b567afada93936252bac2f271c4b43eccd1f) 和本地 Windows 兼容修复 `1406c4a`。保留 appender、日志宏、独立 logger 实例、同步与异步写入、zlib 与 zstd 压缩以及 xlog 加密。
 
-项目使用 vcpkg manifest 管理 Boost.Filesystem、Boost.Iostreams、Boost.Nowide 和 zstd。Linux、macOS、Android 和 iOS 的 zlib 也由 vcpkg 管理。Windows 使用随源码提供的 zlib，各平台的日志加密使用随源码提供的 micro-ecc。
+项目使用 vcpkg manifest 管理 zstd。Linux、macOS、Android 和 iOS 的 zlib 也由 vcpkg 管理。Windows 使用随源码提供的 zlib，各平台的日志加密使用随源码提供的 micro-ecc。文件操作使用 `std::filesystem`，`.mmap3` 恢复缓冲区使用系统的文件映射 API。
 
 公开头文件位于 `include/mars`，日志实现位于 `src/xlog`，内部工具和平台适配位于 `src/comm`。
 
@@ -96,7 +96,7 @@ xcrun simctl spawn booted "$PWD/build/ios-simulator-arm64/xlog_smoke.app/xlog_sm
 | Android | ARM64 和 x86_64 Release | x86_64 Android 模拟器 |
 | iOS | ARM64 真机和模拟器 Release | ARM64 iOS 模拟器 |
 
-日志测试覆盖同步日志和异步 zstd 日志回读、反复打开关闭，以及关闭时取消待执行的维护任务。Android ARM64 和 iOS 真机任务验证交叉构建。
+日志测试覆盖 Unicode 路径下的同步日志和异步 zstd 日志回读、`.mmap3` 恢复、反复打开关闭，以及关闭时取消待执行的维护任务。Android ARM64 和 iOS 真机任务验证交叉构建。
 
 ## 接入
 

@@ -20,12 +20,28 @@
 #ifndef MMAP_UTIL_H_
 #define MMAP_UTIL_H_
 
-#include "boost/iostreams/device/mapped_file.hpp"
+#include <filesystem>
 
-bool IsMmapFileOpenSucc(const boost::iostreams::mapped_file& _mmmap_file);
+namespace mars::comm {
 
-bool OpenMmapFile(const char* _filepath, unsigned int _size, boost::iostreams::mapped_file& _mmmap_file);
+class MappedFile {
+ public:
+    MappedFile() = default;
+    ~MappedFile();
+    MappedFile(const MappedFile&) = delete;
+    MappedFile& operator=(const MappedFile&) = delete;
 
-void CloseMmapFile(boost::iostreams::mapped_file& _mmmap_file);
+    bool Open(const std::filesystem::path& path, unsigned int size);
+    void Close();
+    char* data() const { return data_; }
+
+ private:
+    char* data_ = nullptr;
+#ifndef _WIN32
+    unsigned int size_ = 0;
+#endif
+};
+
+}  // namespace mars::comm
 
 #endif /* MMAP_UTIL_H_ */

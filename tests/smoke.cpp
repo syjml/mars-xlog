@@ -13,6 +13,8 @@
 #include <string_view>
 
 #include "comm/delayed_task.h"
+#include "comm/mmap_util.h"
+#include "xlog/log_zstd_buffer.h"
 
 namespace {
 using namespace mars::xlog;
@@ -59,6 +61,22 @@ fs::path path_from_utf8(std::string_view bytes) {
     return fs::path(std::u8string(bytes.begin(), bytes.end()));
 }
 
+bool check_log(const fs::path& directory, const fs::path& cache, const std::string& prefix,
+               std::string_view marker, bool compressed) {
+    for (const auto& logdir : {directory, cache}) {
+        for (const auto& entry : fs::directory_iterator(logdir)) {
+            const auto& path = entry.path();
+            if (path.extension() != ".xlog" || !utf8(path.filename()).starts_with(prefix + '_'))
+                continue;
+            std::ifstream log(path, std::ios::binary);
+            const std::string data{std::istreambuf_iterator<char>(log), std::istreambuf_iterator<char>()};
+            if (compressed ? contains_compressed_marker(data, marker) : data.find(marker) != std::string::npos)
+                return true;
+        }
+    }
+    return false;
+}
+
 bool write_and_check(const fs::path& directory, const fs::path& cache, TAppenderMode mode, int cycle) {
     XLogConfig config;
     config.logdir_ = utf8(directory);
@@ -76,19 +94,45 @@ bool write_and_check(const fs::path& directory, const fs::path& cache, TAppender
         appender_flush();
 
     appender_close();
+    return check_log(directory, cache, config.nameprefix_, marker, mode == kAppenderAsync);
+}
 
-    for (const auto& logdir : {directory, cache}) {
-        for (const auto& entry : fs::directory_iterator(logdir)) {
-            const auto& path = entry.path();
-            if (path.extension() != ".xlog" || !path.filename().string().starts_with(config.nameprefix_ + '_'))
-                continue;
-            std::ifstream log(path, std::ios::binary);
-            const std::string data{std::istreambuf_iterator<char>(log), std::istreambuf_iterator<char>()};
-            if (mode == kAppenderAsync ? contains_compressed_marker(data, marker) : data.find(marker) != std::string::npos)
-                return true;
-        }
+bool check_mmap_recovery(const fs::path& directory, const fs::path& cache, bool oneshot) {
+    constexpr unsigned int buffer_size = 150 * 1024;
+    constexpr std::string_view marker = "xlog mmap recovery marker";
+    const auto prefix = oneshot ? fs::path(u8"oneshot-\u65e5\u5fd7") : fs::path(u8"reopen-\u65e5\u5fd7");
+    auto mmap_path = cache / prefix;
+    mmap_path += ".mmap3";
+    std::size_t used = 0;
+    {
+        mars::comm::MappedFile file;
+        if (!file.Open(mmap_path, buffer_size))
+            return false;
+        LogZstdBuffer buffer(file.data(), buffer_size, true, "", 1);
+        if (!buffer.Write(marker.data(), marker.size()))
+            return false;
+        used = buffer.GetData().Length();
     }
-    return false;
+
+    XLogConfig config;
+    config.logdir_ = utf8(directory);
+    config.cachedir_ = utf8(cache);
+    config.nameprefix_ = utf8(prefix);
+    config.mode_ = kAppenderSync;
+    config.compress_mode_ = kZstd;
+    if (oneshot) {
+        TFileIOAction result = kActionUnnecessary;
+        appender_oneshot_flush(config, &result);
+        if (result != kActionSuccess || fs::exists(mmap_path))
+            return false;
+    } else {
+        fs::resize_file(mmap_path, used);
+        appender_open(config);
+        appender_close();
+        if (fs::file_size(mmap_path) != buffer_size)
+            return false;
+    }
+    return check_log(directory, cache, config.nameprefix_, marker, true);
 }
 
 bool check_delayed_tasks() {
@@ -132,7 +176,11 @@ int main(int argc, char** argv) {
         std::cerr << "Unexpected result from delayed maintenance tasks\n";
         return 1;
     }
+    if (!check_mmap_recovery(directory, cache, false) || !check_mmap_recovery(directory, cache, true)) {
+        std::cerr << "Could not recover mapped logs in " << directory << '\n';
+        return 1;
+    }
     fs::remove_all(directory);
-    std::cout << "Verified sync and async zstd log readback, 16 open/close cycles, and delayed task cancellation\n";
+    std::cout << "Verified sync and async zstd log readback, mmap recovery, 16 open/close cycles, and delayed task cancellation\n";
     return 0;
 }

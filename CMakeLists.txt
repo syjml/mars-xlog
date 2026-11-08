@@ -9,7 +9,6 @@ if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Windows|Linux|Darwin|Android|iOS)$")
 endif()
 
 include(GNUInstallDirs)
-find_package(Boost CONFIG REQUIRED COMPONENTS filesystem iostreams nowide)
 find_package(zstd CONFIG REQUIRED)
 
 set(xlog_sources
@@ -48,9 +47,7 @@ target_include_directories(xlog
         src
         src/comm
 )
-target_link_libraries(xlog PRIVATE
-    Boost::filesystem Boost::iostreams Boost::nowide zstd::libzstd
-)
+target_link_libraries(xlog PRIVATE zstd::libzstd)
 
 if(WIN32)
     file(GLOB zlib_sources CONFIGURE_DEPENDS src/comm/windows/zlib/*.c)
@@ -60,7 +57,7 @@ if(WIN32)
         src/comm/windows/xlogger_threadinfo.cpp
         src/xlog/console_log_win.cc
     )
-    target_compile_definitions(xlog PRIVATE WIN32 UNICODE _UNICODE NOMINMAX _LIB BOOST_ALL_NO_LIB Z_PREFIX)
+    target_compile_definitions(xlog PRIVATE WIN32 UNICODE _UNICODE NOMINMAX _LIB Z_PREFIX)
     foreach(lang IN ITEMS C CXX)
         if(CMAKE_${lang}_COMPILER_ID STREQUAL "MSVC" OR CMAKE_${lang}_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
             target_compile_options(xlog PRIVATE "$<$<COMPILE_LANGUAGE:${lang}>:/utf-8;/FI${CMAKE_CURRENT_SOURCE_DIR}/src/comm/projdef.h>")

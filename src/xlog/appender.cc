@@ -21,10 +21,6 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-
-#include <mutex>
-
-#include <boost/nowide/filesystem.hpp>
 #endif
 
 #include <stdio.h>
@@ -51,12 +47,14 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 
-#include "boost/filesystem.hpp"
-#include "boost/iostreams/device/mapped_file.hpp"
 #include "comm/assert/__assert.h"
 #include "comm/autobuffer.h"
 #include "comm/bootrun.h"
@@ -98,6 +96,29 @@ static std::mutex sg_mutex_dir_attr;
 void (*g_log_write_callback)(const XLoggerInfo*, const char*) = nullptr;
 
 namespace {
+namespace fs = std::filesystem;
+
+fs::path PathFromUtf8(std::string_view bytes) {
+#ifdef _WIN32
+    return fs::path(std::u8string(bytes.begin(), bytes.end()));
+#else
+    return fs::path(bytes);
+#endif
+}
+
+std::string PathToUtf8(const fs::path& path) {
+#ifdef _WIN32
+    const auto bytes = path.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+#else
+    return path.native();
+#endif
+}
+
+std::string MmapFilePath(const XLogConfig& config) {
+    return (config.cachedir_.empty() ? config.logdir_ : config.cachedir_) + "/" + config.nameprefix_ + ".mmap3";
+}
+
 class ScopeErrno {
  public:
     ScopeErrno() {
@@ -120,15 +141,6 @@ class ScopeErrno {
 #define SCOPE_ERRNO_II(line) ScopeErrno __scope_errno_##line
 
 }  // namespace
-
-#ifdef WIN32
-static void SetConvertToUseUtf8() {
-    static std::once_flag once_flag;
-    std::call_once(once_flag, [] {
-        boost::nowide::nowide_filesystem();
-    });
-}
-#endif
 
 XloggerAppender* XloggerAppender::NewInstance(const XLogConfig& _config, uint64_t _max_byte_size) {
     return new XloggerAppender(_config, _max_byte_size);
@@ -272,11 +284,9 @@ void XloggerAppender::Close() {
         thread_async_.join();
 
     std::unique_lock buffer_lock(mutex_buffer_async_);
-    if (mmap_file_.is_open()) {
-        if (!mmap_file_.operator!())
-            memset(mmap_file_.data(), 0, kBufferBlockLength);
-
-        CloseMmapFile(mmap_file_);
+    if (mmap_file_.data()) {
+        memset(mmap_file_.data(), 0, kBufferBlockLength);
+        mmap_file_.Close();
     } else {
         if (nullptr != log_buff_) {
             delete[](char*)((log_buff_->GetData()).Ptr());
@@ -292,15 +302,11 @@ void XloggerAppender::Close() {
 }
 
 void XloggerAppender::Open(const XLogConfig& _config) {
-#ifdef WIN32
-    // here we make sure boost convert path is utf8 to wide on windows
-    SetConvertToUseUtf8();
-#endif
     config_ = _config;
 
     std::unique_lock dir_attr_lock(sg_mutex_dir_attr);
     if (!config_.cachedir_.empty()) {
-        boost::filesystem::create_directories(config_.cachedir_);
+        fs::create_directories(PathFromUtf8(config_.cachedir_));
 
         thread_timeout_cache_ = std::make_unique<DelayedTask>(std::chrono::minutes(2), [this] {
             __DelTimeoutFile(config_.cachedir_);
@@ -316,7 +322,7 @@ void XloggerAppender::Open(const XLogConfig& _config) {
     thread_timeout_log_ = std::make_unique<DelayedTask>(std::chrono::minutes(2), [this] {
         __DelTimeoutFile(config_.logdir_);
     });
-    boost::filesystem::create_directories(config_.logdir_);
+    fs::create_directories(PathFromUtf8(config_.logdir_));
 #ifdef __APPLE__
     comm::SetLogDirectoryProtection(config_.logdir_.c_str());
 #endif
@@ -325,14 +331,8 @@ void XloggerAppender::Open(const XLogConfig& _config) {
     tickcount_t tick;
     tick.gettickcount();
 
-    char mmap_file_path[512] = {0};
-    snprintf(mmap_file_path,
-             sizeof(mmap_file_path),
-             "%s/%s.mmap3",
-             config_.cachedir_.empty() ? config_.logdir_.c_str() : config_.cachedir_.c_str(),
-             config_.nameprefix_.c_str());
-    bool use_mmap = false;
-    if (OpenMmapFile(mmap_file_path, kBufferBlockLength, mmap_file_)) {
+    const bool use_mmap = mmap_file_.Open(PathFromUtf8(MmapFilePath(config_)), kBufferBlockLength);
+    if (use_mmap) {
         if (_config.compress_mode_ == kZstd) {
             log_buff_ = new LogZstdBuffer(mmap_file_.data(),
                                           kBufferBlockLength,
@@ -342,21 +342,18 @@ void XloggerAppender::Open(const XLogConfig& _config) {
         } else {
             log_buff_ = new LogZlibBuffer(mmap_file_.data(), kBufferBlockLength, true, _config.pub_key_.c_str());
         }
-        use_mmap = true;
     } else {
-        char* buffer = new char[kBufferBlockLength];
+        char* buffer = new char[kBufferBlockLength]();
         if (_config.compress_mode_ == kZstd) {
             log_buff_ =
                 new LogZstdBuffer(buffer, kBufferBlockLength, true, _config.pub_key_.c_str(), _config.compress_level_);
         } else {
             log_buff_ = new LogZlibBuffer(buffer, kBufferBlockLength, true, _config.pub_key_.c_str());
         }
-        use_mmap = false;
     }
 
     if (nullptr == log_buff_->GetData().Ptr()) {
-        if (use_mmap && mmap_file_.is_open())
-            CloseMmapFile(mmap_file_);
+        mmap_file_.Close();
         return;
     }
 
@@ -395,7 +392,7 @@ void XloggerAppender::Open(const XLogConfig& _config) {
     Write(nullptr, logmsg);
 
     if (!config_.cachedir_.empty()) {
-        boost::filesystem::space_info info = boost::filesystem::space(config_.cachedir_);
+        fs::space_info info = fs::space(PathFromUtf8(config_.cachedir_));
         snprintf(logmsg,
                  sizeof(logmsg),
                  "cache dir space info, capacity:%" PRIuMAX " free:%" PRIuMAX " available:%" PRIuMAX,
@@ -405,7 +402,7 @@ void XloggerAppender::Open(const XLogConfig& _config) {
         Write(nullptr, logmsg);
     }
 
-    boost::filesystem::space_info info = boost::filesystem::space(config_.logdir_);
+    fs::space_info info = fs::space(PathFromUtf8(config_.logdir_));
     snprintf(logmsg,
              sizeof(logmsg),
              "log dir space info, capacity:%" PRIuMAX " free:%" PRIuMAX " available:%" PRIuMAX,
@@ -433,17 +430,17 @@ void XloggerAppender::__GetFileNamesByPrefix(const std::string& _logdir,
                                              const std::string& _fileprefix,
                                              const std::string& _fileext,
                                              std::vector<std::string>& _filename_vec) {
-    boost::filesystem::path path(_logdir);
-    if (!boost::filesystem::is_directory(path)) {
+    const auto path = PathFromUtf8(_logdir);
+    if (!fs::is_directory(path)) {
         return;
     }
 
-    boost::filesystem::directory_iterator end_iter;
+    fs::directory_iterator end_iter;
     std::string filename;
 
-    for (boost::filesystem::directory_iterator iter(path); iter != end_iter; ++iter) {
-        if (boost::filesystem::is_regular_file(iter->status())) {
-            filename = iter->path().filename().string();
+    for (fs::directory_iterator iter(path); iter != end_iter; ++iter) {
+        if (fs::is_regular_file(iter->status())) {
+            filename = PathToUtf8(iter->path().filename());
             if (strutil::StartsWith(filename, _fileprefix) && strutil::EndsWith(filename, _fileext)) {
                 _filename_vec.push_back(filename);
             }
@@ -497,14 +494,14 @@ long XloggerAppender::__GetNextFileIndex(const std::string& _fileprefix, const s
     }
 
     uint64_t filesize = 0;
-    std::string logfilepath = config_.logdir_ + "/" + last_filename;
-    if (boost::filesystem::exists(logfilepath)) {
-        filesize += boost::filesystem::file_size(logfilepath);
+    const auto logfilepath = PathFromUtf8(config_.logdir_ + "/" + last_filename);
+    if (fs::exists(logfilepath)) {
+        filesize += fs::file_size(logfilepath);
     }
     if (!config_.cachedir_.empty()) {
-        logfilepath = config_.cachedir_ + "/" + last_filename;
-        if (boost::filesystem::exists(logfilepath)) {
-            filesize += boost::filesystem::file_size(logfilepath);
+        const auto cachefilepath = PathFromUtf8(config_.cachedir_ + "/" + last_filename);
+        if (fs::exists(cachefilepath)) {
+            filesize += fs::file_size(cachefilepath);
         }
     }
     return (filesize > max_file_size_) ? index + 1 : index;
@@ -541,24 +538,24 @@ void XloggerAppender::__MakeLogFileName(const timeval& _tv,
 
 void XloggerAppender::__DelTimeoutFile(const std::string& _log_path) {
     std::unique_lock dir_attr_lock(sg_mutex_dir_attr);
-    time_t now_time = time(nullptr);
+    const auto now = fs::file_time_type::clock::now();
 
-    boost::filesystem::path path(_log_path);
+    const auto path = PathFromUtf8(_log_path);
 
-    if (boost::filesystem::exists(path) && boost::filesystem::is_directory(path)) {
-        boost::filesystem::directory_iterator end_iter;
-        for (boost::filesystem::directory_iterator iter(path); iter != end_iter; ++iter) {
-            time_t file_modify_time = boost::filesystem::last_write_time(iter->path());
+    if (fs::exists(path) && fs::is_directory(path)) {
+        fs::directory_iterator end_iter;
+        for (fs::directory_iterator iter(path); iter != end_iter; ++iter) {
+            const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - fs::last_write_time(iter->path()));
 
-            if (now_time > file_modify_time && now_time - file_modify_time > max_alive_time_) {
-                if (boost::filesystem::is_regular_file(iter->status())
+            if (age > std::chrono::seconds(max_alive_time_)) {
+                if (fs::is_regular_file(iter->status())
                     && iter->path().extension() == (std::string(".") + LOG_EXT)) {
-                    boost::filesystem::remove(iter->path());
+                    fs::remove(iter->path());
                 }
-                if (boost::filesystem::is_directory(iter->status())) {
-                    std::string filename = iter->path().filename().string();
+                if (fs::is_directory(iter->status())) {
+                    std::string filename = PathToUtf8(iter->path().filename());
                     if (filename.size() == 8 && filename.find_first_not_of("0123456789") == std::string::npos) {
-                        boost::filesystem::remove_all(iter->path());
+                        fs::remove_all(iter->path());
                     }
                 }
             }
@@ -571,11 +568,12 @@ bool XloggerAppender::__AppendFile(const std::string& _src_file, const std::stri
         return false;
     }
 
-    if (!boost::filesystem::exists(_src_file)) {
+    const auto source = PathFromUtf8(_src_file);
+    if (!fs::exists(source)) {
         return false;
     }
 
-    if (0 == boost::filesystem::file_size(_src_file)) {
+    if (0 == fs::file_size(source)) {
         return true;
     }
 
@@ -638,33 +636,33 @@ void XloggerAppender::__MoveOldFiles(const std::string& _src_path,
         return;
     }
 
-    boost::filesystem::path path(_src_path);
-    if (!boost::filesystem::is_directory(path)) {
+    const auto path = PathFromUtf8(_src_path);
+    if (!fs::is_directory(path)) {
         return;
     }
 
     std::unique_lock lock_file(mutex_log_file_);
-    time_t now_time = time(nullptr);
+    const auto now = fs::file_time_type::clock::now();
 
-    boost::filesystem::directory_iterator end_iter;
-    for (boost::filesystem::directory_iterator iter(path); iter != end_iter; ++iter) {
-        if (!strutil::StartsWith(iter->path().filename().string(), _nameprefix)
-            || !strutil::EndsWith(iter->path().string(), LOG_EXT)) {
+    fs::directory_iterator end_iter;
+    for (fs::directory_iterator iter(path); iter != end_iter; ++iter) {
+        const auto filename = PathToUtf8(iter->path().filename());
+        if (!strutil::StartsWith(filename, _nameprefix) || !strutil::EndsWith(filename, LOG_EXT)) {
             continue;
         }
 
         if (config_.cache_days_ > 0) {
-            time_t file_modify_time = boost::filesystem::last_write_time(iter->path());
-            if (now_time > file_modify_time && (now_time - file_modify_time) < config_.cache_days_ * 24 * 60 * 60) {
+            const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - fs::last_write_time(iter->path()));
+            if (age > std::chrono::seconds::zero() && age < std::chrono::days(config_.cache_days_)) {
                 continue;
             }
         }
 
-        if (!__AppendFile(iter->path().string(), config_.logdir_ + "/" + iter->path().filename().string())) {
+        if (!__AppendFile(PathToUtf8(iter->path()), config_.logdir_ + "/" + filename)) {
             break;
         }
 
-        boost::filesystem::remove(iter->path());
+        fs::remove(iter->path());
     }
 }
 
@@ -825,12 +823,12 @@ bool XloggerAppender::__CacheLogs() {
     gettimeofday(&tv, nullptr);
     char logfilepath[1024] = {0};
     __MakeLogFileName(tv, config_.logdir_, config_.nameprefix_.c_str(), LOG_EXT, logfilepath, 1024);
-    if (boost::filesystem::exists(logfilepath)) {
+    if (fs::exists(PathFromUtf8(logfilepath))) {
         return false;
     }
 
     static const uintmax_t kAvailableSizeThreshold = (uintmax_t)1 * 1024 * 1024 * 1024;  // 1G
-    boost::filesystem::space_info info = boost::filesystem::space(config_.cachedir_);
+    fs::space_info info = fs::space(PathFromUtf8(config_.cachedir_));
     if (info.available < kAvailableSizeThreshold) {
         return false;
     }
@@ -862,7 +860,7 @@ void XloggerAppender::__Log2File(const void* _data, size_t _len, bool _move_file
     __MakeLogFileName(tv, config_.cachedir_, config_.nameprefix_.c_str(), LOG_EXT, logcachefilepath, 1024);
 
     bool cache_logs = __CacheLogs();
-    if ((cache_logs || boost::filesystem::exists(logcachefilepath)) && __OpenLogFile(config_.cachedir_)) {
+    if ((cache_logs || fs::exists(PathFromUtf8(logcachefilepath))) && __OpenLogFile(config_.cachedir_)) {
         __WriteFile(_data, _len, logfile_);
         if (kAppenderAsync == mode_) {
             __CloseLogFile();
@@ -878,7 +876,7 @@ void XloggerAppender::__Log2File(const void* _data, size_t _len, bool _move_file
             if (kAppenderSync == mode_) {
                 __CloseLogFile();
             }
-            boost::filesystem::remove(logcachefilepath);
+            fs::remove(PathFromUtf8(logcachefilepath));
         }
         return;
     }
@@ -1040,8 +1038,8 @@ const char* XloggerAppender::Dump(const void* _dumpbuffer, size_t _len) {
 
     std::string filepath = config_.logdir_ + "/" + forder_name + "/";
 
-    if (!boost::filesystem::exists(filepath))
-        boost::filesystem::create_directory(filepath);
+    if (!fs::exists(PathFromUtf8(filepath)))
+        fs::create_directory(PathFromUtf8(filepath));
 
     char file_name[128] = {0};
     snprintf(file_name,
@@ -1159,15 +1157,15 @@ bool XloggerAppender::MakeLogfileName(int _timespan, const char* _prefix, std::v
     char cache_log_path[2048] = {0};
     __MakeLogFileName(tv, config_.cachedir_, _prefix, LOG_EXT, cache_log_path, sizeof(cache_log_path));
 
-    if (boost::filesystem::exists(log_path)) {
+    if (fs::exists(PathFromUtf8(log_path))) {
         _filepath_vec.push_back(log_path);
     }
 
-    if (boost::filesystem::exists(cache_log_path)) {
+    if (fs::exists(PathFromUtf8(cache_log_path))) {
         _filepath_vec.push_back(cache_log_path);
     }
 
-    if (!boost::filesystem::exists(log_path) && !boost::filesystem::exists(cache_log_path)) {
+    if (!fs::exists(PathFromUtf8(log_path)) && !fs::exists(PathFromUtf8(cache_log_path))) {
         _filepath_vec.push_back(log_path);
     }
 
@@ -1175,26 +1173,17 @@ bool XloggerAppender::MakeLogfileName(int _timespan, const char* _prefix, std::v
 }
 
 void XloggerAppender::TreatMappingAsFileAndFlush(TFileIOAction* _result) {
-#ifdef WIN32
-    // here we make sure boost convert path is utf8 to wide on windows
-    SetConvertToUseUtf8();
-#endif
-    char mmap_file_path[512] = {0};
-    snprintf(mmap_file_path,
-             sizeof(mmap_file_path),
-             "%s/%s.mmap3",
-             config_.cachedir_.empty() ? config_.logdir_.c_str() : config_.cachedir_.c_str(),
-             config_.nameprefix_.c_str());
+    const auto mmap_file_path = MmapFilePath(config_);
 
     // exist
-    if (!boost::filesystem::exists(mmap_file_path)) {
+    if (!fs::exists(PathFromUtf8(mmap_file_path))) {
         if (_result)
             *_result = kActionUnnecessary;
         return;
     }
 
     // read buffer
-    FILE* treat_mapping_as_file = fopen(mmap_file_path, "rb");
+    FILE* treat_mapping_as_file = fopen(mmap_file_path.c_str(), "rb");
     if (!treat_mapping_as_file) {
         if (_result)
             *_result = kActionOpenFailed;
@@ -1243,7 +1232,7 @@ void XloggerAppender::TreatMappingAsFileAndFlush(TFileIOAction* _result) {
     WriteTips2File("~~~~~ end of mmap from other process ~~~~~%s\n", mark_info);
 
     // clean mmaping
-    if (!boost::filesystem::remove(mmap_file_path)) {
+    if (!fs::remove(PathFromUtf8(mmap_file_path))) {
         if (_result)
             *_result = kActionRemoveFailed;
         return;

@@ -1,5 +1,4 @@
 include(CMakeFindDependencyMacro)
-find_dependency(Boost CONFIG COMPONENTS filesystem iostreams nowide)
 find_dependency(zstd CONFIG)
 if(NOT WIN32)
     find_dependency(ZLIB)

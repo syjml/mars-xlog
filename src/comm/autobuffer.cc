@@ -19,7 +19,7 @@
 #include <inttypes.h>
 #endif
 
-#include "mars/comm/assert/__assert.h"
+#include "comm/assert/__assert.h"
 
 const AutoBuffer KNullAtuoBuffer;
 

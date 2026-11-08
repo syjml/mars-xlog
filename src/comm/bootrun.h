@@ -22,7 +22,7 @@
 
 #include <stdlib.h>
 
-#include "mars/comm/compiler_util.h"
+#include "comm/compiler_util.h"
 
 #ifdef __cplusplus
 extern "C" {

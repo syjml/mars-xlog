@@ -1,6 +1,6 @@
 #include "boost/iostreams/device/mapped_file.hpp"
-#include "mars/comm/thread/condition.h"
-#include "mars/comm/thread/thread.h"
+#include "comm/thread/condition.h"
+#include "comm/thread/thread.h"
 #include "mars/xlog/xloggerbase.h"
 #include "mars/xlog/appender.h"
 

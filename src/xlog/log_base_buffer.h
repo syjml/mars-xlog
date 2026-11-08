@@ -24,8 +24,8 @@
 
 #include <string>
 
-#include "mars/comm/autobuffer.h"
-#include "mars/comm/ptrbuffer.h"
+#include "comm/autobuffer.h"
+#include "comm/ptrbuffer.h"
 
 namespace mars {
 namespace xlog {

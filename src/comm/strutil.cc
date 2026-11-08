@@ -19,7 +19,7 @@
 // yerungui
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "strutil.h"
+#include "mars/comm/strutil.h"
 
 #include <ctype.h>
 #include <stdio.h>

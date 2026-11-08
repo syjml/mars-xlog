@@ -54,21 +54,21 @@
 
 #include "boost/filesystem.hpp"
 #include "boost/iostreams/device/mapped_file.hpp"
-#include "mars/comm/autobuffer.h"
-#include "mars/comm/bootrun.h"
-#include "mars/comm/mmap_util.h"
-#include "mars/comm/ptrbuffer.h"
+#include "comm/autobuffer.h"
+#include "comm/bootrun.h"
+#include "comm/mmap_util.h"
+#include "comm/ptrbuffer.h"
 #include "mars/comm/strutil.h"
-#include "mars/comm/thread/condition.h"
-#include "mars/comm/thread/lock.h"
-#include "mars/comm/thread/thread.h"
-#include "mars/comm/tickcount.h"
-#include "mars/comm/time_utils.h"
-#include "mars/comm/verinfo.h"
+#include "comm/thread/condition.h"
+#include "comm/thread/lock.h"
+#include "comm/thread/thread.h"
+#include "comm/tickcount.h"
+#include "comm/time_utils.h"
+#include "comm/verinfo.h"
 #include "mars/xlog/xloggerbase.h"
 
 #ifdef __APPLE__
-#include "mars/comm/objc/data_protect_attr.h"
+#include "comm/objc/data_protect_attr.h"
 #endif
 
 #include "log_base_buffer.h"

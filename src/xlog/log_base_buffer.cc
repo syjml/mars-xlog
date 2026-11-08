@@ -27,7 +27,7 @@
 #include <cstdio>
 #include <thread>
 
-#include "mars/comm/channel.h"
+#include "comm/channel.h"
 #include "xlog/crypt/log_crypt.h"
 #include "xlog/crypt/log_magic_num.h"
 

@@ -3,7 +3,7 @@
 
 #include <functional>
 
-#include "mars/comm/thread/thread.h"
+#include "comm/thread/thread.h"
 
 namespace mars {
 namespace comm {

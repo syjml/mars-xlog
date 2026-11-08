@@ -14,7 +14,7 @@
 
 #include <Windows.h>
 
-#include "strutil.h"
+#include "mars/comm/strutil.h"
 
 #define ENCODING CP_UTF8
 

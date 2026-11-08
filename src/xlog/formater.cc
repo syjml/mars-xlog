@@ -23,8 +23,8 @@
 
 #include <algorithm>
 
-#include "mars/comm/ptrbuffer.h"
-#include "mars/comm/xlogger/loginfo_extract.h"
+#include "comm/ptrbuffer.h"
+#include "xlog/xlogger/loginfo_extract.h"
 #include "mars/xlog/xloggerbase.h"
 
 #ifdef _WIN32

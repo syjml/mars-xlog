@@ -7,7 +7,7 @@
 
 #include <functional>
 
-#include "mars/comm/xlogger/loginfo_extract.h"
+#include "xlog/xlogger/loginfo_extract.h"
 #include "mars/xlog/xloggerbase.h"
 
 namespace mars {

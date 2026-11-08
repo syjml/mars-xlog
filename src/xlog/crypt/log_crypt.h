@@ -24,7 +24,7 @@
 
 #include <string>
 
-#include "mars/comm/autobuffer.h"
+#include "comm/autobuffer.h"
 
 namespace mars {
 namespace xlog {

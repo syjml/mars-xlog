@@ -1,10 +1,12 @@
-# Mars xlog for Windows
+# Mars xlog
 
 从 Tencent Mars 提取的独立 C++ 静态库，源自 [Mars 6aa5b56](https://github.com/Tencent/mars/tree/6aa5b567afada93936252bac2f271c4b43eccd1f) 和本地 Windows 兼容修复 `1406c4a`。保留 appender、日志宏、独立 logger 实例、同步与异步写入、zlib 与 zstd 压缩以及 xlog 加密。
 
 项目使用 vcpkg manifest 管理 Boost.Filesystem、Boost.Iostreams、Boost.Nowide 和 zstd。Windows 线程等待使用 C++ 标准库，zlib 和 micro-ecc 随源码提供。
 
-## 构建
+公开头文件位于 `include/mars`，日志实现位于 `src/xlog`，内部工具和平台适配位于 `src/comm`。
+
+## Windows 构建
 
 安装 VS2022 的「使用 C++ 的桌面开发」工作负载和 CMake 3.21 或更新版本，设置 `VCPKG_ROOT` 指向已完成 bootstrap 的 vcpkg 目录。首次配置会安装所需依赖。
 

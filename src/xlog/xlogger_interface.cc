@@ -22,9 +22,9 @@
 #include <functional>
 #include <map>
 
-#include "mars/comm/thread/lock.h"
-#include "mars/comm/thread/mutex.h"
-#include "mars/comm/xlogger/xlogger_category.h"
+#include "comm/thread/lock.h"
+#include "comm/thread/mutex.h"
+#include "xlog/xlogger/xlogger_category.h"
 #include "xlogger_appender.h"
 
 using namespace mars::comm;

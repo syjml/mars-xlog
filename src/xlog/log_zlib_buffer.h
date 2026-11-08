@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 #ifdef _WIN32
-#include <zlib/zlib.h> // mars/mars/comm/windows/zlib/zlib.h
+#include <zlib/zlib.h>
 #else
 #include <zlib.h>
 #endif
@@ -30,8 +30,8 @@
 #include <string>
 
 #include "log_base_buffer.h"
-#include "mars/comm/autobuffer.h"
-#include "mars/comm/ptrbuffer.h"
+#include "comm/autobuffer.h"
+#include "comm/ptrbuffer.h"
 
 namespace mars {
 namespace xlog {

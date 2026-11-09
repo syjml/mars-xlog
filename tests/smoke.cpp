@@ -7,14 +7,18 @@
 #include <zlib.h>
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <latch>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include "comm/delayed_task.h"
 #include "comm/mmap_util.h"
@@ -23,6 +27,8 @@
 #else
 #include "xlog/log_zlib_buffer.h"
 #endif
+
+extern "C" void xlog_smoke_write_from_c();
 
 namespace {
 using namespace mars::xlog;
@@ -173,6 +179,91 @@ bool check_mmap_recovery(const fs::path& directory, const fs::path& cache, bool 
     return check_log(directory, cache, config.nameprefix_, marker, true);
 }
 
+bool check_log_formatting(const fs::path& directory, const fs::path& cache) {
+    XLOGGER_STATIC_ASSERT(sizeof(int) >= 2);
+    const string_cast argument("first");
+    char integer[66];
+    if (XMessage()(TSF "%1 %0 %_ %%", argument, "second", "third").String() != "second first third %"
+        || XMessage()(TSF "plain %%").String() != "plain %"
+        || XMessage()(TSF "%_%_%_%_%_%_%_%_%_%_%_%_%_%_%_%_", 0, 1, 2, 3, 4, 5, 6, 7,
+                      8, 9, 0, 1, 2, 3, 4, 5).String() != "0123456789012345"
+        || std::string_view(string_cast_itoa((std::numeric_limits<int64_t>::min)(), integer)) != "-9223372036854775808"
+        || std::string_view(string_cast_itoa(255, integer, 16)) != "FF"
+        || std::string_view(string_cast_itoa(255, integer, 16, false)) != "ff"
+        || std::string_view(string_cast_itoa(255, integer, 1)) != "itoa err") {
+        return false;
+    }
+
+    XLogConfig config;
+    config.logdir_ = utf8(directory);
+    config.nameprefix_ = "format";
+    config.mode_ = kAppenderSync;
+    appender_open(config);
+    xinfo2(TSF "typed log %_", 42);
+    xlog_smoke_write_from_c();
+    int suppressed = 0;
+    xdebug2("disabled %d", ++suppressed);
+    appender_close();
+    return suppressed == 0
+        && check_log(directory, cache, config.nameprefix_, "typed log 42", false)
+        && check_log(directory, cache, config.nameprefix_, "C logging literal", false)
+        && check_log(directory, cache, config.nameprefix_, "C formatted integer 42", false);
+}
+
+bool check_concurrent_reopen(const fs::path& directory, const fs::path& cache) {
+    XLogConfig config;
+    config.logdir_ = utf8(directory);
+    config.mode_ = kAppenderAsync;
+    config.compress_mode_ = kZstd;
+    config.nameprefix_ = "concurrent";
+    auto named = config;
+    named.nameprefix_ = "concurrent-named";
+
+    std::atomic<bool> stop{false};
+    std::atomic<uintptr_t> handle{0};
+    std::latch started(2);
+    auto write_logs = [&] {
+        started.count_down();
+        while (!stop.load()) {
+            xinfo2("default writer");
+            if (const auto current = handle.load()) {
+                XloggerWrite(current, nullptr, "named writer");
+                Flush(current, true);
+            }
+            std::this_thread::sleep_for(1ms);
+        }
+    };
+    std::thread first(write_logs);
+    std::thread second(write_logs);
+    started.wait();
+
+    bool passed = true;
+    for (int cycle = 0; cycle < 8; ++cycle) {
+        config.mode_ = cycle % 2 == 0 ? kAppenderSync : kAppenderAsync;
+        appender_open(config);
+        const auto current = reinterpret_cast<uintptr_t>(NewXloggerInstance(named, kLevelInfo));
+        if (!current) {
+            appender_close();
+            passed = false;
+            break;
+        }
+        handle = current;
+        passed = passed && reinterpret_cast<uintptr_t>(GetXloggerInstance(named.nameprefix_.c_str())) == current;
+        xinfo2("default close marker %d", cycle);
+        XloggerWrite(current, nullptr, "named close marker");
+        std::this_thread::sleep_for(3ms);
+        appender_close();
+        ReleaseXloggerInstance(named.nameprefix_.c_str());
+        passed = passed && !IsEnabledFor(current, kLevelInfo) && !GetXloggerInstance(named.nameprefix_.c_str());
+    }
+    stop = true;
+    first.join();
+    second.join();
+    return passed
+        && check_log(directory, cache, config.nameprefix_, "default close marker 7", true)
+        && check_log(directory, cache, named.nameprefix_, "named close marker", true);
+}
+
 bool check_delayed_tasks() {
     bool ran = false;
     mars::comm::DelayedTask task(10ms, [&] { ran = true; });
@@ -210,6 +301,12 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    const auto mmap_path = cache / "async.mmap3";
+    if (!fs::remove(mmap_path) || !fs::create_directory(mmap_path)
+        || !write_and_check(directory, cache, kAppenderAsync, 8)) {
+        std::cerr << "Could not read logs written without a mapped buffer\n";
+        return 1;
+    }
     if (!check_delayed_tasks() || !fs::exists(stale_log) || !fs::exists(old_cache_log)) {
         std::cerr << "Unexpected result from delayed maintenance tasks\n";
         return 1;
@@ -218,8 +315,13 @@ int main(int argc, char** argv) {
         std::cerr << "Could not recover mapped logs in " << directory << '\n';
         return 1;
     }
+    if (!check_log_formatting(directory, cache) || !check_concurrent_reopen(directory, cache)) {
+        std::cerr << "Unexpected log formatting or concurrent close/reopen result\n";
+        return 1;
+    }
     fs::remove_all(directory);
     std::cout << "Verified sync and async " << compression_name
-              << " log readback, mmap recovery, 16 open/close cycles, and delayed task cancellation\n";
+              << " log readback, mmap recovery, heap fallback, delayed task cancellation, "
+                 "C/C++ formatting, and concurrent close/reopen\n";
     return 0;
 }

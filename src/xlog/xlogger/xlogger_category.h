@@ -2,24 +2,21 @@
 #ifndef MARS_COMM_XLOGGER_CATEGORY_H_
 #define MARS_COMM_XLOGGER_CATEGORY_H_
 
-#include <functional>
+#include <atomic>
+#include <memory>
 
 #include "mars/xlog/xloggerbase.h"
 
 namespace mars {
+namespace xlog {
+class XloggerAppender;
+}
 namespace comm {
 
 class XloggerCategory {
  public:
-    static XloggerCategory* NewInstance(uintptr_t _appender,
-                                        std::function<void(const XLoggerInfo* _info, const char* _log)> _appender_func);
-
- private:
-    XloggerCategory(uintptr_t _appender,
-                    std::function<void(const XLoggerInfo* _info, const char* _log)> _appender_func);
-
- public:
-    intptr_t GetAppender();
+    explicit XloggerCategory(std::shared_ptr<xlog::XloggerAppender> appender);
+    xlog::XloggerAppender& GetAppender() const;
     TLogLevel GetLevel();
     void SetLevel(TLogLevel _level);
     bool IsEnabledFor(TLogLevel _level);
@@ -31,9 +28,8 @@ class XloggerCategory {
     void __WriteImpl(const XLoggerInfo* _info, const char* _log);
 
  private:
-    TLogLevel level_ = kLevelNone;
-    uintptr_t appender_ = 0;
-    std::function<void(const XLoggerInfo* _info, const char* _log)> appender_func_ = nullptr;
+    std::atomic<TLogLevel> level_{kLevelNone};
+    std::shared_ptr<xlog::XloggerAppender> appender_;
 };
 
 }  // namespace comm

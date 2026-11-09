@@ -33,20 +33,34 @@
 
 #include <limits>
 #include <string>
+#include <type_traits>
+
+#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
+#include <charconv>
+#endif
 
 #include "strutil.h"
 
 template <typename T>
 char* string_cast_itoa(const T& value, char* result, uint8_t base = 10, bool upper_case = true) {
-    if (!(2 <= base && base <= 36)) {
-#if defined(_WIN32)
-        strcpy_s(result, strlen(result), "itoa err");
-#else
-        strcpy(result, "itoa err");
-#endif
+    // The caller supplies room for the formatted digits and terminating null.
+    if (base < 2 || base > 36) {
+        memcpy(result, "itoa err", sizeof("itoa err"));
         return result;
     }
 
+#if defined(__cpp_lib_to_chars)
+    using Integer = typename std::conditional<std::is_same<T, bool>::value, unsigned int, T>::type;
+    char digits[std::numeric_limits<Integer>::digits + 2];
+    const auto converted = std::to_chars(digits, digits + sizeof(digits), static_cast<Integer>(value), base);
+    char* output = result;
+    for (const char* digit = digits; digit != converted.ptr; ++digit) {
+        const char ch = *digit;
+        *output++ = upper_case && ch >= 'a' && ch <= 'z' ? static_cast<char>(ch - 'a' + 'A') : ch;
+    }
+    *output = '\0';
+    return result;
+#else
     char *ptr_right = result, *ptr_left = result;
     T tmp_value = value;
     const char* num_mapping;
@@ -80,6 +94,7 @@ char* string_cast_itoa(const T& value, char* result, uint8_t base = 10, bool upp
         *(ptr_left++) = tmp_char;
     }
     return result;
+#endif
 }
 
 #define string_cast_hex(value) string_cast(value, 16)

@@ -45,11 +45,4 @@ class DelayedTask {
     std::thread worker_;
 };
 
-template <class Owner>
-void DeferRelease(Owner owner) {
-    std::thread([owner = std::move(owner)] {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-    }).detach();
-}
-
 }  // namespace mars::comm

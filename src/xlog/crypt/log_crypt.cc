@@ -26,6 +26,9 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include <atomic>
+#include <iterator>
+
 #include "comm/time_utils.h"
 #include "log_magic_num.h"
 
@@ -40,7 +43,14 @@
 namespace mars {
 namespace xlog {
 
-const static int TEA_BLOCK_LEN = 8;
+using record::LoadLittleEndian;
+using record::StoreLittleEndian;
+
+constexpr std::size_t kTeaBlockSize = 2 * sizeof(uint32_t);
+
+static auto HeaderBytes(char* data) {
+    return std::as_writable_bytes(std::span<char, record::kHeaderSize>(data, record::kHeaderSize));
+}
 
 static void __TeaEncrypt(uint32_t* v, uint32_t* k) {
     uint32_t v0 = v[0], v1 = v[1], sum = 0, i;
@@ -60,15 +70,15 @@ static uint16_t __GetSeq(bool _is_async) {
         return 0;
     }
 
-    static uint16_t s_seq = 0;
-
-    s_seq++;
-
-    if (0 == s_seq) {
-        s_seq++;
-    }
-
-    return s_seq;
+    static std::atomic<uint16_t> sequence{0};
+    auto previous = sequence.load(std::memory_order_relaxed);
+    uint16_t next;
+    do {
+        next = static_cast<uint16_t>(previous + 1);
+        if (next == 0)
+            next = 1;
+    } while (!sequence.compare_exchange_weak(previous, next, std::memory_order_relaxed));
+    return next;
 }
 
 #ifndef XLOG_NO_CRYPT
@@ -93,9 +103,9 @@ static bool Hex2Buffer(const char* _str, size_t _len, unsigned char* _buffer) {
 }
 #endif
 
-LogCrypt::LogCrypt(const char* _pubkey) : seq_(0), is_crypt_(false) {
+LogCrypt::LogCrypt(const char* _pubkey) : is_crypt_(false) {
 #ifndef XLOG_NO_CRYPT
-    const static size_t PUB_KEY_LEN = 64;
+    constexpr auto PUB_KEY_LEN = record::kPublicKeySize;
 
     if (NULL == _pubkey || PUB_KEY_LEN * 2 != strnlen(_pubkey, 256)) {
         return;
@@ -117,7 +127,11 @@ LogCrypt::LogCrypt(const char* _pubkey) : seq_(0), is_crypt_(false) {
         return;
     }
 
-    memcpy(tea_key_, ecdh_key, sizeof(tea_key_));
+    const auto key = std::as_bytes(std::span(ecdh_key));
+    for (std::size_t i = 0; i < std::size(tea_key_); ++i) {
+        tea_key_[i] = LoadLittleEndian<uint32_t>(
+            std::span<const std::byte, sizeof(uint32_t)>(key.data() + i * sizeof(uint32_t), sizeof(uint32_t)));
+    }
 
     is_crypt_ = true;
 
@@ -129,27 +143,11 @@ LogCrypt::LogCrypt(const char* _pubkey) : seq_(0), is_crypt_(false) {
  */
 
 uint32_t LogCrypt::GetHeaderLen() {
-    return sizeof(char) * 3 + sizeof(uint16_t) + sizeof(uint32_t) + sizeof(char) * 64;
+    return record::kHeaderSize;
 }
 
 uint32_t LogCrypt::GetTailerLen() {
     return sizeof(char);
-}
-
-bool LogCrypt::GetLogHour(const char* const _data, size_t _len, int& _begin_hour, int& _end_hour) {
-    if (_len < GetHeaderLen())
-        return false;
-
-    char start = _data[0];
-    if (!LogMagicNum::MagicStartIsValid(start))
-        return false;
-
-    char begin_hour = _data[sizeof(char) + sizeof(uint16_t)];
-    char end_hour = _data[sizeof(char) + sizeof(uint16_t) + sizeof(char)];
-
-    _begin_hour = (int)begin_hour;
-    _end_hour = (int)end_hour;
-    return true;
 }
 
 void LogCrypt::UpdateLogHour(char* _data) {
@@ -158,8 +156,7 @@ void LogCrypt::UpdateLogHour(char* _data) {
     time_t sec = tv.tv_sec;
     struct tm tm_tmp = mars_local_time(sec);
 
-    char hour = (char)tm_tmp.tm_hour;
-    memcpy(_data + GetHeaderLen() - sizeof(uint32_t) - sizeof(char) * 64 - sizeof(char), &hour, sizeof(hour));
+    _data[record::kEndHourOffset] = static_cast<char>(tm_tmp.tm_hour);
 }
 
 uint32_t LogCrypt::GetLogLen(const char* const _data, size_t _len) {
@@ -171,35 +168,30 @@ uint32_t LogCrypt::GetLogLen(const char* const _data, size_t _len) {
         return 0;
     }
 
-    uint32_t len = 0;
-    memcpy(&len, _data + GetHeaderLen() - sizeof(uint32_t) - sizeof(char) * 64, sizeof(len));
-    return len;
+    const auto bytes = std::as_bytes(std::span(_data, _len));
+    return LoadLittleEndian<uint32_t>(bytes.subspan<record::kLengthOffset, sizeof(uint32_t)>());
 }
 
 void LogCrypt::UpdateLogLen(char* _data, uint32_t _add_len) {
-    uint32_t currentlen = (uint32_t)(GetLogLen(_data, GetHeaderLen()) + _add_len);
-    memcpy(_data + GetHeaderLen() - sizeof(uint32_t) - sizeof(char) * 64, &currentlen, sizeof(currentlen));
+    const auto length = GetLogLen(_data, GetHeaderLen()) + _add_len;
+    StoreLittleEndian(HeaderBytes(_data).subspan<record::kLengthOffset, sizeof(uint32_t)>(), length);
 }
 
 void LogCrypt::SetHeaderInfo(char* _data, bool _is_async, char _magic_start) {
-    memcpy(_data, &_magic_start, sizeof(_magic_start));
-    seq_ = __GetSeq(_is_async);
-    memcpy(_data + sizeof(_magic_start), &seq_, sizeof(seq_));
+    _data[0] = _magic_start;
+    auto bytes = HeaderBytes(_data);
+    StoreLittleEndian(bytes.subspan<record::kSequenceOffset, sizeof(uint16_t)>(), __GetSeq(_is_async));
 
     struct timeval tv;
     gettimeofday(&tv, 0);
     time_t sec = tv.tv_sec;
     tm tm_tmp = mars_local_time(sec);
 
-    char hour = (char)tm_tmp.tm_hour;
-    memcpy(_data + sizeof(_magic_start) + sizeof(seq_), &hour, sizeof(hour));
-    memcpy(_data + sizeof(_magic_start) + sizeof(seq_) + sizeof(hour), &hour, sizeof(hour));
-
-    uint32_t len = 0;
-    memcpy(_data + sizeof(_magic_start) + sizeof(seq_) + sizeof(hour) * 2, &len, sizeof(len));
-    memcpy(_data + sizeof(_magic_start) + sizeof(seq_) + sizeof(hour) * 2 + sizeof(len),
-           client_pubkey_,
-           sizeof(client_pubkey_));
+    const auto hour = static_cast<char>(tm_tmp.tm_hour);
+    _data[record::kBeginHourOffset] = hour;
+    _data[record::kEndHourOffset] = hour;
+    StoreLittleEndian<uint32_t>(bytes.subspan<record::kLengthOffset, sizeof(uint32_t)>(), 0);
+    memcpy(_data + record::kPublicKeyOffset, client_pubkey_, sizeof(client_pubkey_));
 }
 
 void LogCrypt::SetTailerInfo(char* _data, char _magic_end) {
@@ -221,25 +213,7 @@ void LogCrypt::CryptSyncLog(const char* const _log_data,
 
     SetTailerInfo((char*)_out_buff.Ptr() + _input_len + header_len, _magic_end);
 
-    //  if (!is_crypt_) {
-    memcpy((char*)_out_buff.Ptr() + header_len, _log_data, _input_len);
-    //    return;
-    //}
-
-#ifndef XLOG_NO_CRYPT
-    /*   uint32_t tmp[2] = {0};
-       size_t cnt = _input_len / TEA_BLOCK_LEN;
-       size_t remain_len = _input_len % TEA_BLOCK_LEN;
-
-       for (size_t i = 0; i < cnt; ++i) {
-           memcpy(tmp, _log_data + i * TEA_BLOCK_LEN, TEA_BLOCK_LEN);
-           __TeaEncrypt(tmp, tea_key_);
-           memcpy((char*)_out_buff.Ptr() + header_len + i * TEA_BLOCK_LEN, tmp, TEA_BLOCK_LEN);
-       }
-
-       memcpy((char*)_out_buff.Ptr() + header_len + _input_len - remain_len, _log_data + _input_len - remain_len,
-       remain_len);*/
-#endif
+    memcpy(static_cast<char*>(_out_buff.Ptr()) + header_len, _log_data, _input_len);
 }
 
 void LogCrypt::CryptAsyncLog(const char* const _log_data,
@@ -252,16 +226,24 @@ void LogCrypt::CryptAsyncLog(const char* const _log_data,
         return;
     }
 #ifndef XLOG_NO_CRYPT
-    uint32_t tmp[2] = {0};
-    size_t cnt = _input_len / TEA_BLOCK_LEN;
-    _remain_nocrypt_len = _input_len % TEA_BLOCK_LEN;
+    auto input = std::span(_log_data, _input_len);
+    char encrypted[kTeaBlockSize];
+    const auto output = std::as_writable_bytes(std::span(encrypted));
 
-    for (size_t i = 0; i < cnt; ++i) {
-        memcpy(tmp, _log_data + i * TEA_BLOCK_LEN, TEA_BLOCK_LEN);
-        __TeaEncrypt(tmp, tea_key_);
-        _out_buff.append((char*)tmp, TEA_BLOCK_LEN);
+    while (input.size() >= kTeaBlockSize) {
+        const auto block = std::as_bytes(input.first<kTeaBlockSize>());
+        uint32_t words[] = {
+            LoadLittleEndian<uint32_t>(block.first<sizeof(uint32_t)>()),
+            LoadLittleEndian<uint32_t>(block.last<sizeof(uint32_t)>()),
+        };
+        __TeaEncrypt(words, tea_key_);
+        StoreLittleEndian(output.first<sizeof(uint32_t)>(), words[0]);
+        StoreLittleEndian(output.last<sizeof(uint32_t)>(), words[1]);
+        _out_buff.append(encrypted, sizeof(encrypted));
+        input = input.subspan(kTeaBlockSize);
     }
-    _out_buff.append(_log_data + _input_len - _remain_nocrypt_len, _remain_nocrypt_len);
+    _remain_nocrypt_len = input.size();
+    _out_buff.append(input.data(), input.size());
 #endif
 }
 
@@ -277,7 +259,6 @@ bool LogCrypt::Fix(char* _data, size_t _data_len, uint32_t& _raw_log_len) {
 
     _raw_log_len = GetLogLen(_data, _data_len);
 
-    memcpy(&seq_, _data + 1, sizeof(seq_));
     return true;
 }
 

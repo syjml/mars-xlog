@@ -25,6 +25,7 @@
 #include <string>
 
 #include "comm/autobuffer.h"
+#include "log_record.h"
 
 namespace mars {
 namespace xlog {
@@ -43,7 +44,6 @@ class LogCrypt {
     static uint32_t GetHeaderLen();
     static uint32_t GetTailerLen();
 
-    static bool GetLogHour(const char* const _data, size_t _len, int& _begin_hour, int& _end_hour);
     static void UpdateLogHour(char* _data);
 
     static uint32_t GetLogLen(const char* const _data, size_t _len);
@@ -67,9 +67,8 @@ class LogCrypt {
     bool IsCrypt();
 
  private:
-    uint16_t seq_;
     uint32_t tea_key_[4];
-    char client_pubkey_[64];
+    char client_pubkey_[record::kPublicKeySize]{};
     bool is_crypt_;
 };
 

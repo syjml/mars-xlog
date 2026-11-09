@@ -25,14 +25,15 @@
 #include <zstd.h>
 
 #include "xlog/crypt/log_magic_num.h"
+#include "xlog/crypt/log_record.h"
 #include "xlog/crypt/micro-ecc-master/uECC.h"
 
 namespace {
 namespace fs = std::filesystem;
 using mars::xlog::LogMagicNum;
+namespace record = mars::xlog::record;
 using PrivateKey = std::array<uint8_t, 32>;
-using PublicKey = std::array<uint8_t, 64>;
-constexpr std::size_t header_size = 9 + PublicKey{}.size();
+using PublicKey = std::array<uint8_t, record::kPublicKeySize>;
 constexpr std::size_t chunk_size = 32 * 1024;
 
 class NewFile {
@@ -168,15 +169,6 @@ void GenerateKey(const fs::path& private_path) {
     std::cout << ToHex(public_key) << '\n';
 }
 
-uint32_t Load32(const uint8_t* bytes) {
-    return uint32_t(bytes[0]) | (uint32_t(bytes[1]) << 8) | (uint32_t(bytes[2]) << 16) | (uint32_t(bytes[3]) << 24);
-}
-
-void Store32(uint8_t* bytes, uint32_t value) {
-    for (unsigned i = 0; i < 4; ++i)
-        bytes[i] = static_cast<uint8_t>(value >> (8 * i));
-}
-
 using TeaKey = std::array<uint32_t, 4>;
 
 TeaKey DeriveTeaKey(const PrivateKey& private_key, const uint8_t* public_key) {
@@ -184,23 +176,30 @@ TeaKey DeriveTeaKey(const PrivateKey& private_key, const uint8_t* public_key) {
     std::array<uint8_t, 32> secret{};
     if (!uECC_valid_public_key(public_key, curve) || !uECC_shared_secret(public_key, private_key.data(), secret.data(), curve))
         throw std::runtime_error("invalid client public key");
-    return {Load32(secret.data()), Load32(secret.data() + 4), Load32(secret.data() + 8), Load32(secret.data() + 12)};
+    const auto bytes = std::as_bytes(std::span(secret));
+    return {record::LoadLittleEndian<uint32_t>(bytes.subspan<0, 4>()),
+            record::LoadLittleEndian<uint32_t>(bytes.subspan<4, 4>()),
+            record::LoadLittleEndian<uint32_t>(bytes.subspan<8, 4>()),
+            record::LoadLittleEndian<uint32_t>(bytes.subspan<12, 4>())};
 }
 
 void DecryptBlocks(std::span<uint8_t> bytes, const TeaKey& key) {
     constexpr uint32_t delta = 0x9e3779b9;
     // The xlog wire format uses 16 TEA rounds and leaves any partial final block as written.
     for (std::size_t i = 0; i + 8 <= bytes.size(); i += 8) {
-        uint32_t left = Load32(bytes.data() + i);
-        uint32_t right = Load32(bytes.data() + i + 4);
+        const auto block = std::as_writable_bytes(std::span<uint8_t, 8>(bytes.data() + i, 8));
+        const auto left_bytes = block.first<4>();
+        const auto right_bytes = block.last<4>();
+        uint32_t left = record::LoadLittleEndian<uint32_t>(left_bytes);
+        uint32_t right = record::LoadLittleEndian<uint32_t>(right_bytes);
         uint32_t sum = delta * 16u;
         for (unsigned round = 0; round < 16; ++round) {
             right -= ((left << 4) + key[2]) ^ (left + sum) ^ ((left >> 5) + key[3]);
             left -= ((right << 4) + key[0]) ^ (right + sum) ^ ((right >> 5) + key[1]);
             sum -= delta;
         }
-        Store32(bytes.data() + i, left);
-        Store32(bytes.data() + i + 4, right);
+        record::StoreLittleEndian(left_bytes, left);
+        record::StoreLittleEndian(right_bytes, right);
     }
 }
 
@@ -294,14 +293,15 @@ void DecodeLog(const fs::path& private_path, const fs::path& input_path, const f
     NewFile output(output_path);
     uint64_t offset = 0;
     try {
-        std::array<uint8_t, header_size> header{};
+        std::array<uint8_t, record::kHeaderSize> header{};
         while (input.read(reinterpret_cast<char*>(header.data()), header.size())) {
             const char magic = static_cast<char>(header[0]);
             if (!LogMagicNum::MagicStartIsValid(magic))
                 throw std::runtime_error("invalid or unsupported xlog record marker");
-            const auto length = Load32(header.data() + 5);
+            const auto bytes = std::as_bytes(std::span(header));
+            const auto length = record::LoadLittleEndian<uint32_t>(bytes.subspan<record::kLengthOffset, 4>());
             const bool encrypted = magic == LogMagicNum::kMagicAsyncZlibStart || magic == LogMagicNum::kMagicAsyncZstdStart;
-            const auto key = encrypted ? DeriveTeaKey(private_key, header.data() + 9) : TeaKey{};
+            const auto key = encrypted ? DeriveTeaKey(private_key, header.data() + record::kPublicKeyOffset) : TeaKey{};
             RecordInput record(input, length, encrypted ? &key : nullptr);
             if (magic == LogMagicNum::kMagicAsyncZlibStart || magic == LogMagicNum::kMagicAsyncNoCryptZlibStart) {
                 DecodeZlib(record, output);

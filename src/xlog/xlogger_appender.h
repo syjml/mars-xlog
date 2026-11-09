@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -17,11 +19,9 @@ namespace xlog {
 class LogBaseBuffer;
 class XloggerAppender {
  public:
-    static XloggerAppender* NewInstance(const XLogConfig& _config, uint64_t _max_byte_size);
-    static XloggerAppender* NewInstance(const XLogConfig& _config, uint64_t _max_byte_size, bool _one_shot);
-    static void DelayRelease(XloggerAppender* _appender);
-
-    void Open(const XLogConfig& _config);
+    static std::shared_ptr<XloggerAppender> NewInstance(const XLogConfig& config, uint64_t max_byte_size);
+    static std::unique_ptr<XloggerAppender> NewOneShot(const XLogConfig& config, uint64_t max_byte_size);
+    ~XloggerAppender();
 
     void Write(const XLoggerInfo* _info, const char* _log);
     void SetMode(TAppenderMode _mode);
@@ -43,7 +43,9 @@ class XloggerAppender {
 
  private:
     XloggerAppender(const XLogConfig& _config, uint64_t _max_byte_size);
-    XloggerAppender(const XLogConfig& _config, uint64_t _max_byte_size, bool _one_shot);
+    void Open(const XLogConfig& config);
+    void StopBackgroundTasks();
+    void WriteRecord(const XLoggerInfo* info, const char* log);
 
     std::string __MakeLogFileNamePrefix(const timeval& _tv, const char* _prefix);
     void __GetFileNamesByPrefix(const std::string& _logdir,
@@ -78,27 +80,34 @@ class XloggerAppender {
     void __MoveOldFiles(const std::string& _src_path, const std::string& _dest_path, const std::string& _nameprefix);
 
  private:
+    struct FileCloser {
+        void operator()(FILE* file) const { std::fclose(file); }
+    };
+    using File = std::unique_ptr<FILE, FileCloser>;
+
     XLogConfig config_;
-    LogBaseBuffer* log_buff_ = nullptr;
     comm::MappedFile mmap_file_;
+    std::unique_ptr<char[]> heap_buffer_;
+    std::unique_ptr<LogBaseBuffer> log_buff_;
+    std::mutex mutex_sync_write_;
     std::mutex mutex_buffer_async_;
     std::mutex mutex_log_file_;
-    FILE* logfile_ = nullptr;
+    File logfile_;
     time_t openfiletime_ = 0;
 #ifdef DEBUG
-    bool consolelog_open_ = true;
+    std::atomic<bool> consolelog_open_ = true;
 #else
-    bool consolelog_open_ = false;
+    std::atomic<bool> consolelog_open_ = false;
 #endif
     std::atomic<bool> log_close_{true};
     std::atomic<TAppenderMode> mode_{kAppenderAsync};
     std::condition_variable cond_buffer_async_;
     bool flush_requested_ = false;
-    uint64_t max_file_size_ = 0;               // 0, will not split log file.
-    long max_alive_time_ = 10 * 24 * 60 * 60;  // 10 days in second
+    std::atomic<uint64_t> max_file_size_ = 0;               // 0, will not split log file.
+    std::atomic<long> max_alive_time_ = 10 * 24 * 60 * 60;  // 10 days in second
 
     time_t last_time_ = 0;
-    uint64_t last_tick_ = 0;
+    std::chrono::milliseconds last_tick_{};
     char last_file_path_[1024] = {0};
 
     std::thread thread_async_;

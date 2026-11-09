@@ -1,6 +1,6 @@
 /*
  ============================================================================
- Name        : xloggerbase.c
+ Name        : xloggerbase.cc
  ============================================================================
  */
 
@@ -8,7 +8,11 @@
 
 #include <stdio.h>
 
+#include <atomic>
+
 #include "comm/compiler_util.h"
+
+extern "C" {
 
 WEAK_FUNC TLogLevel __xlogger_Level_impl();
 WEAK_FUNC void __xlogger_SetLevel_impl(TLogLevel _level);
@@ -53,7 +57,7 @@ xlogger_appender_t xlogger_SetAppender(xlogger_appender_t _appender) {
     return __xlogger_SetAppender_impl(_appender);
 }
 
-static xlogger_filter_t sg_filter = NULL;
+static std::atomic<xlogger_filter_t> sg_filter{nullptr};
 void xlogger_SetFilter(xlogger_filter_t _filter) {
     sg_filter = _filter;
 }
@@ -100,8 +104,8 @@ void xlogger_Assert(const XLoggerInfo* _info, const char* _expression, const cha
 }
 
 #ifndef USING_XLOG_WEAK_FUNC
-static TLogLevel gs_level = kLevelNone;
-static xlogger_appender_t gs_appender = NULL;
+static std::atomic<TLogLevel> gs_level{kLevelNone};
+static std::atomic<xlogger_appender_t> gs_appender{nullptr};
 
 TLogLevel __xlogger_Level_impl() {
     return gs_level;
@@ -114,13 +118,12 @@ int __xlogger_IsEnabledFor_impl(TLogLevel _level) {
 }
 
 xlogger_appender_t __xlogger_SetAppender_impl(xlogger_appender_t _appender) {
-    xlogger_appender_t old_appender = gs_appender;
-    gs_appender = _appender;
-    return old_appender;
+    return gs_appender.exchange(_appender);
 }
 
 void __xlogger_Write_impl(const XLoggerInfo* _info, const char* _log) {
-    if (!gs_appender)
+    const auto appender = gs_appender.load();
+    if (!appender)
         return;
 
     if (_info) {
@@ -143,9 +146,9 @@ void __xlogger_Write_impl(const XLoggerInfo* _info, const char* _log) {
             XLoggerInfo* info = (XLoggerInfo*)_info;
             info->level = kLevelFatal;
         }
-        gs_appender(_info, "NULL == _log");
+        appender(_info, "NULL == _log");
     } else {
-        gs_appender(_info, _log);
+        appender(_info, _log);
     }
 }
 
@@ -181,3 +184,5 @@ void __xlogger_Assert_impl(const XLoggerInfo* _info, const char* _expression, co
     __ASSERT2(_info->filename, _info->line, _info->func_name, _expression, _log);
 }
 #endif
+
+}  // extern "C"

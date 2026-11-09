@@ -51,7 +51,6 @@ set(xlog_sources
     src/comm/mmap_util.cc
     src/comm/ptrbuffer.cc
     src/comm/strutil.cc
-    src/comm/tickcount.cc
     src/comm/time_utils.c
     src/xlog/appender.cc
     src/xlog/crypt/log_crypt.cc
@@ -62,7 +61,7 @@ set(xlog_sources
     src/xlog/xlogger/loginfo_extract.c
     src/xlog/xlogger/xlogger.cc
     src/xlog/xlogger/xlogger_category.cc
-    src/xlog/xlogger/xloggerbase.c
+    src/xlog/xlogger/xloggerbase.cc
     src/xlog/xlogger_interface.cc
 )
 
@@ -155,7 +154,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/xlogConfig.cmake" DESTINATION "${xlog
 if(PROJECT_IS_TOP_LEVEL)
     include(CTest)
     if(BUILD_TESTING)
-        add_executable(xlog_smoke tests/smoke.cpp)
+        add_executable(xlog_smoke tests/smoke.cpp tests/smoke_c.c)
         target_link_libraries(xlog_smoke PRIVATE xlog::xlog)
         target_include_directories(xlog_smoke PRIVATE src)
         if(XLOG_ENABLE_ZSTD)

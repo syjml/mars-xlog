@@ -149,7 +149,7 @@ void XLogger::DoTypeSafeFormat(const char* _format, const string_cast** _args) {
             if (nextch != '_')
                 argIndex = nextch - '0';
 
-            if (_args[argIndex] != NULL) {
+            if (argIndex < 16 && _args[argIndex] != nullptr) {
                 if (NULL != _args[argIndex]->str()) {
                     m_message += _args[argIndex]->str();
                 } else {
@@ -290,7 +290,7 @@ void XMessage::DoTypeSafeFormat(const char* _format, const string_cast** _args) 
             if (nextch != '_')
                 argIndex = nextch - '0';
 
-            if (_args[argIndex] != NULL) {
+            if (argIndex < 16 && _args[argIndex] != nullptr) {
                 if (NULL != _args[argIndex]->str()) {
                     m_message += _args[argIndex]->str();
                 } else {

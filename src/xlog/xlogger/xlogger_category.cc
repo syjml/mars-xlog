@@ -2,23 +2,18 @@
 #include "xlogger_category.h"
 
 #include <cstdio>
-#include <functional>
+#include <utility>
+
+#include "xlog/xlogger_appender.h"
 
 namespace mars {
 namespace comm {
 
-XloggerCategory* XloggerCategory::NewInstance(
-    uintptr_t _appender,
-    std::function<void(const XLoggerInfo* _info, const char* _log)> _appender_func) {
-    return new XloggerCategory(_appender, _appender_func);
-}
-XloggerCategory::XloggerCategory(uintptr_t _appender,
-                                 std::function<void(const XLoggerInfo* _info, const char* _log)> _appender_func)
-: appender_(_appender), appender_func_(_appender_func) {
-}
+XloggerCategory::XloggerCategory(std::shared_ptr<xlog::XloggerAppender> appender)
+: appender_(std::move(appender)) {}
 
-intptr_t XloggerCategory::GetAppender() {
-    return appender_;
+xlog::XloggerAppender& XloggerCategory::GetAppender() const {
+    return *appender_;
 }
 
 TLogLevel XloggerCategory::GetLevel() {
@@ -57,9 +52,6 @@ void XloggerCategory::Write(const XLoggerInfo* _info, const char* _log) {
 }
 
 void XloggerCategory::__WriteImpl(const XLoggerInfo* _info, const char* _log) {
-    if (!appender_func_) {
-        return;
-    }
     if (_info && _info->level < level_) {
         return;
     }
@@ -76,9 +68,9 @@ void XloggerCategory::__WriteImpl(const XLoggerInfo* _info, const char* _log) {
             XLoggerInfo* info = (XLoggerInfo*)_info;
             info->level = kLevelFatal;
         }
-        appender_func_(_info, "NULL == _log");
+        appender_->Write(_info, "NULL == _log");
     } else {
-        appender_func_(_info, _log);
+        appender_->Write(_info, _log);
     }
 }
 

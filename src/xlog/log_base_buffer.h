@@ -22,6 +22,7 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 
 #include "comm/autobuffer.h"
@@ -37,23 +38,6 @@ class LogBaseBuffer {
     LogBaseBuffer(void* _pbuffer, size_t _len, bool _is_compress, const char* _pubkey);
     virtual ~LogBaseBuffer();
 
- public:
-    static bool GetPeriodLogs(const char* _log_path,
-                              int _begin_hour,
-                              int _end_hour,
-                              unsigned long& _begin_pos,
-                              unsigned long& _end_pos,
-                              std::string& _err_msg);
-
-    static bool GetPeriodLogsWithTimeoutMs(const std::string& _log_path,
-                                           int _begin_hour,
-                                           int _end_hour,
-                                           unsigned long& _begin_pos,
-                                           unsigned long& _end_pos,
-                                           std::string& _err_msg,
-                                           const uint32_t _timeout_ms);
-
- public:
     PtrBuffer& GetData();
     virtual size_t Compress(const void* src, size_t inLen, void* dst, size_t outLen) = 0;
     virtual void Flush(AutoBuffer& _buff);
@@ -72,7 +56,7 @@ class LogBaseBuffer {
  protected:
     PtrBuffer buff_;
     bool is_compress_;
-    class LogCrypt* log_crypt_;
+    std::unique_ptr<LogCrypt> log_crypt_;
     bool is_crypt_;
     size_t remain_nocrypt_len_;
 };

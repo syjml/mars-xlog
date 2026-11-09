@@ -19,183 +19,179 @@
 
 #include "mars/xlog/xlogger_interface.h"
 
-#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
-#include "comm/delayed_task.h"
 #include "xlog/xlogger/xlogger_category.h"
 #include "xlogger_appender.h"
 
-using namespace mars::comm;
-namespace mars {
-namespace xlog {
+namespace mars::xlog {
+namespace {
+using comm::XloggerCategory;
 
-static std::mutex& GetGlobalMutex() {
-    static std::mutex sg_mutex;
-    return sg_mutex;
+struct Registry {
+    std::mutex lifecycle_mutex;
+    std::mutex mutex;
+    std::map<std::string, uintptr_t, std::less<>> names;
+    std::unordered_map<uintptr_t, std::shared_ptr<XloggerCategory>> entries;
+};
+
+Registry& GetRegistry() {
+    static Registry registry;
+    return registry;
 }
 
-static std::map<std::string, XloggerCategory*>& GetGlobalInstanceMap() {
-    static std::map<std::string, XloggerCategory*> sg_map;
-    return sg_map;
+std::shared_ptr<XloggerCategory> FindByHandle(uintptr_t handle) {
+    auto& registry = GetRegistry();
+    std::lock_guard lock(registry.mutex);
+    const auto it = registry.entries.find(handle);
+    return it != registry.entries.end() ? it->second : nullptr;
 }
 
-XloggerCategory* NewXloggerInstance(const XLogConfig& _config, TLogLevel _level) {
-    if (_config.logdir_.empty() || _config.nameprefix_.empty()) {
+void FlushAppender(XloggerAppender& appender, bool sync) {
+    if (sync)
+        appender.FlushSync();
+    else
+        appender.Flush();
+}
+}  // namespace
+
+XloggerCategory* NewXloggerInstance(const XLogConfig& config, TLogLevel level) {
+    if (config.logdir_.empty() || config.nameprefix_.empty())
         return nullptr;
+
+    auto& registry = GetRegistry();
+    std::lock_guard lifecycle_lock(registry.lifecycle_mutex);
+    {
+        std::lock_guard lock(registry.mutex);
+        const auto it = registry.names.find(config.nameprefix_);
+        if (it != registry.names.end())
+            return registry.entries.at(it->second).get();
     }
 
-    std::unique_lock lock(GetGlobalMutex());
-    auto it = GetGlobalInstanceMap().find(_config.nameprefix_);
-    if (it != GetGlobalInstanceMap().end()) {
-        return it->second;
+    auto category = std::make_shared<XloggerCategory>(XloggerAppender::NewInstance(config, 0));
+    category->SetLevel(level);
+    auto* instance = category.get();
+    const auto handle = reinterpret_cast<uintptr_t>(instance);
+    std::lock_guard lock(registry.mutex);
+    const auto name = registry.names.emplace(config.nameprefix_, handle).first;
+    try {
+        registry.entries.emplace(handle, std::move(category));
+    } catch (...) {
+        registry.names.erase(name);
+        throw;
     }
-
-    XloggerAppender* appender = XloggerAppender::NewInstance(_config, 0);
-
-    using namespace std::placeholders;
-    XloggerCategory* category = XloggerCategory::NewInstance(reinterpret_cast<uintptr_t>(appender),
-                                                             std::bind(&XloggerAppender::Write, appender, _1, _2));
-    category->SetLevel(_level);
-    GetGlobalInstanceMap()[_config.nameprefix_] = category;
-    return category;
+    return instance;
 }
 
-mars::comm::XloggerCategory* GetXloggerInstance(const char* _nameprefix) {
-    if (nullptr == _nameprefix) {
+XloggerCategory* GetXloggerInstance(const char* nameprefix) {
+    if (!nameprefix)
         return nullptr;
-    }
 
-    std::unique_lock lock(GetGlobalMutex());
-    auto it = GetGlobalInstanceMap().find(_nameprefix);
-    if (it != GetGlobalInstanceMap().end()) {
-        return it->second;
-    }
-
-    return nullptr;
+    auto& registry = GetRegistry();
+    std::lock_guard lock(registry.mutex);
+    const auto it = registry.names.find(nameprefix);
+    return it != registry.names.end() ? registry.entries.at(it->second).get() : nullptr;
 }
 
-void ReleaseXloggerInstance(const char* _nameprefix) {
-    if (nullptr == _nameprefix) {
+void ReleaseXloggerInstance(const char* nameprefix) {
+    if (!nameprefix)
         return;
-    }
 
-    std::unique_lock lock(GetGlobalMutex());
-    auto it = GetGlobalInstanceMap().find(_nameprefix);
-    if (it == GetGlobalInstanceMap().end()) {
-        return;
+    auto& registry = GetRegistry();
+    std::lock_guard lifecycle_lock(registry.lifecycle_mutex);
+    std::shared_ptr<XloggerCategory> category;
+    {
+        std::lock_guard lock(registry.mutex);
+        const auto it = registry.names.find(nameprefix);
+        if (it == registry.names.end())
+            return;
+        category = std::move(registry.entries.extract(it->second).mapped());
+        registry.names.erase(it);
     }
-
-    std::unique_ptr<XloggerCategory> category(it->second);
-    std::unique_ptr<XloggerAppender> appender(reinterpret_cast<XloggerAppender*>(category->GetAppender()));
-    GetGlobalInstanceMap().erase(it);
-    appender->Close();
-    DeferRelease(std::make_pair(std::move(appender), std::move(category)));
+    category->GetAppender().Close();
 }
 
-void XloggerWrite(uintptr_t _instance_ptr, const XLoggerInfo* _info, const char* _log) {
-    if (0 == _instance_ptr) {
-        xlogger_Write(_info, _log);
-    } else {
-        XloggerCategory* category = reinterpret_cast<XloggerCategory*>(_instance_ptr);
-        category->Write(_info, _log);
-    }
+void XloggerWrite(uintptr_t handle, const XLoggerInfo* info, const char* log) {
+    if (!handle)
+        xlogger_Write(info, log);
+    else if (auto category = FindByHandle(handle))
+        category->Write(info, log);
 }
 
-bool IsEnabledFor(uintptr_t _instance_ptr, TLogLevel _level) {
-    if (0 == _instance_ptr) {
-        return xlogger_IsEnabledFor(_level);
-    } else {
-        XloggerCategory* category = reinterpret_cast<XloggerCategory*>(_instance_ptr);
-        return category->IsEnabledFor(_level);
-    }
+bool IsEnabledFor(uintptr_t handle, TLogLevel level) {
+    if (!handle)
+        return xlogger_IsEnabledFor(level);
+    auto category = FindByHandle(handle);
+    return category && category->IsEnabledFor(level);
 }
 
-TLogLevel GetLevel(uintptr_t _instance_ptr) {
-    if (0 == _instance_ptr) {
+TLogLevel GetLevel(uintptr_t handle) {
+    if (!handle)
         return xlogger_Level();
-    } else {
-        XloggerCategory* category = reinterpret_cast<XloggerCategory*>(_instance_ptr);
-        TLogLevel level = category->GetLevel();
-        return level;
-    }
+    auto category = FindByHandle(handle);
+    return category ? category->GetLevel() : kLevelNone;
 }
 
-void SetLevel(uintptr_t _instance_ptr, TLogLevel _level) {
-    if (0 == _instance_ptr) {
-        xlogger_SetLevel(_level);
-    } else {
-        XloggerCategory* category = reinterpret_cast<XloggerCategory*>(_instance_ptr);
-        return category->SetLevel(_level);
-    }
+void SetLevel(uintptr_t handle, TLogLevel level) {
+    if (!handle)
+        xlogger_SetLevel(level);
+    else if (auto category = FindByHandle(handle))
+        category->SetLevel(level);
 }
 
-void SetAppenderMode(uintptr_t _instance_ptr, TAppenderMode _mode) {
-    if (0 == _instance_ptr) {
-        appender_setmode(_mode);
-    } else {
-        XloggerCategory* category = reinterpret_cast<XloggerCategory*>(_instance_ptr);
-        XloggerAppender* appender = reinterpret_cast<XloggerAppender*>(category->GetAppender());
-        return appender->SetMode(_mode);
-    }
+void SetAppenderMode(uintptr_t handle, TAppenderMode mode) {
+    if (!handle)
+        appender_setmode(mode);
+    else if (auto category = FindByHandle(handle))
+        category->GetAppender().SetMode(mode);
 }
 
-void Flush(uintptr_t _instance_ptr, bool _is_sync) {
-    if (0 == _instance_ptr) {
-        _is_sync ? appender_flush_sync() : appender_flush();
-    } else {
-        XloggerCategory* category = reinterpret_cast<XloggerCategory*>(_instance_ptr);
-        XloggerAppender* appender = reinterpret_cast<XloggerAppender*>(category->GetAppender());
-        _is_sync ? appender->FlushSync() : appender->Flush();
-    }
+void Flush(uintptr_t handle, bool sync) {
+    if (!handle)
+        sync ? appender_flush_sync() : appender_flush();
+    else if (auto category = FindByHandle(handle))
+        FlushAppender(category->GetAppender(), sync);
 }
 
-void FlushAll(bool _is_sync) {
-    _is_sync ? appender_flush_sync() : appender_flush();
-    std::unique_lock lock(GetGlobalMutex());
-    auto& xmap = GetGlobalInstanceMap();
-    // loop through all categories
-    for (auto it = xmap.begin(); it != xmap.end(); ++it) {
-        XloggerCategory* category = it->second;
-        XloggerAppender* appender = reinterpret_cast<XloggerAppender*>(category->GetAppender());
-        _is_sync ? appender->FlushSync() : appender->Flush();
+void FlushAll(bool sync) {
+    Flush(0, sync);
+    std::vector<std::shared_ptr<XloggerCategory>> categories;
+    {
+        auto& registry = GetRegistry();
+        std::lock_guard lock(registry.mutex);
+        categories.reserve(registry.entries.size());
+        for (const auto& [name, handle] : registry.names)
+            categories.push_back(registry.entries.at(handle));
     }
+    for (const auto& category : categories)
+        FlushAppender(category->GetAppender(), sync);
 }
 
-void SetConsoleLogOpen(uintptr_t _instance_ptr, bool _is_open) {
-    if (0 == _instance_ptr) {
-        appender_set_console_log(_is_open);
-    } else {
-        XloggerCategory* category = reinterpret_cast<XloggerCategory*>(_instance_ptr);
-        XloggerAppender* appender = reinterpret_cast<XloggerAppender*>(category->GetAppender());
-        return appender->SetConsoleLog(_is_open);
-    }
+void SetConsoleLogOpen(uintptr_t handle, bool open) {
+    if (!handle)
+        appender_set_console_log(open);
+    else if (auto category = FindByHandle(handle))
+        category->GetAppender().SetConsoleLog(open);
 }
 
-void SetMaxFileSize(uintptr_t _instance_ptr, long _max_file_size) {
-    if (0 == _instance_ptr) {
-        appender_set_max_file_size(_max_file_size);
-    } else {
-        // 目前非默认实例设置最大大小因为时序会有问题
-        // 因为设置过来的时候文件已经打开过一次
-        XloggerCategory* category = reinterpret_cast<XloggerCategory*>(_instance_ptr);
-        XloggerAppender* appender = reinterpret_cast<XloggerAppender*>(category->GetAppender());
-        return appender->SetMaxFileSize(_max_file_size);
-    }
+void SetMaxFileSize(uintptr_t handle, long max_file_size) {
+    if (!handle)
+        appender_set_max_file_size(max_file_size);
+    else if (auto category = FindByHandle(handle))
+        category->GetAppender().SetMaxFileSize(max_file_size);
 }
 
-void SetMaxAliveTime(uintptr_t _instance_ptr, long _alive_seconds) {
-    if (0 == _instance_ptr) {
-        appender_set_max_alive_duration(_alive_seconds);
-    } else {
-        XloggerCategory* category = reinterpret_cast<XloggerCategory*>(_instance_ptr);
-        XloggerAppender* appender = reinterpret_cast<XloggerAppender*>(category->GetAppender());
-        return appender->SetMaxAliveDuration(_alive_seconds);
-    }
+void SetMaxAliveTime(uintptr_t handle, long alive_seconds) {
+    if (!handle)
+        appender_set_max_alive_duration(alive_seconds);
+    else if (auto category = FindByHandle(handle))
+        category->GetAppender().SetMaxAliveDuration(alive_seconds);
 }
 
-}  // namespace xlog
-}  // namespace mars
+}  // namespace mars::xlog

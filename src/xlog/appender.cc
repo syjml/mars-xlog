@@ -58,7 +58,6 @@
 #include "comm/mmap_util.h"
 #include "comm/ptrbuffer.h"
 #include "mars/comm/strutil.h"
-#include "comm/tickcount.h"
 #include "comm/time_utils.h"
 #include "comm/verinfo.h"
 #include "mars/xlog/xloggerbase.h"
@@ -117,12 +116,23 @@ std::string MmapFilePath(const XLogConfig& config) {
     return (config.cachedir_.empty() ? config.logdir_ : config.cachedir_) + "/" + config.nameprefix_ + ".mmap3";
 }
 
-LogBaseBuffer* MakeLogBuffer(void* data, const XLogConfig& config) {
+std::chrono::milliseconds LogClockNow() {
+#ifdef __ANDROID__
+    // Preserve elapsed time across device suspend for clock-change detection.
+    return std::chrono::milliseconds(gettickcount());
+#else
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch());
+#endif
+}
+
+std::unique_ptr<LogBaseBuffer> MakeLogBuffer(void* data, const XLogConfig& config) {
 #ifdef XLOG_ENABLE_ZSTD
     if (config.compress_mode_ == kZstd)
-        return new LogZstdBuffer(data, kBufferBlockLength, true, config.pub_key_.c_str(), config.compress_level_);
+        return std::make_unique<LogZstdBuffer>(data, kBufferBlockLength, true, config.pub_key_.c_str(),
+                                               config.compress_level_);
 #endif
-    return new LogZlibBuffer(data, kBufferBlockLength, true, config.pub_key_.c_str());
+    return std::make_unique<LogZlibBuffer>(data, kBufferBlockLength, true, config.pub_key_.c_str());
 }
 
 class ScopeErrno {
@@ -148,27 +158,21 @@ class ScopeErrno {
 
 }  // namespace
 
-XloggerAppender* XloggerAppender::NewInstance(const XLogConfig& _config, uint64_t _max_byte_size) {
-    return new XloggerAppender(_config, _max_byte_size);
+std::shared_ptr<XloggerAppender> XloggerAppender::NewInstance(const XLogConfig& config, uint64_t max_byte_size) {
+    auto appender = std::shared_ptr<XloggerAppender>(new XloggerAppender(config, max_byte_size));
+    appender->Open(config);
+    return appender;
 }
 
-XloggerAppender* XloggerAppender::NewInstance(const XLogConfig& _config, uint64_t _max_byte_size, bool _one_shot) {
-    return new XloggerAppender(_config, _max_byte_size, _one_shot);
+std::unique_ptr<XloggerAppender> XloggerAppender::NewOneShot(const XLogConfig& config, uint64_t max_byte_size) {
+    return std::unique_ptr<XloggerAppender>(new XloggerAppender(config, max_byte_size));
 }
 
-void XloggerAppender::DelayRelease(XloggerAppender* _appender) {
-    std::unique_ptr<XloggerAppender> appender(_appender);
-    appender->Close();
-    DeferRelease(std::move(appender));
-}
+XloggerAppender::XloggerAppender(const XLogConfig& config, uint64_t max_byte_size)
+: config_(config), mode_(config.mode_), max_file_size_(max_byte_size) {}
 
-XloggerAppender::XloggerAppender(const XLogConfig& _config, uint64_t _max_byte_size)
-: max_file_size_(_max_byte_size) {
-    Open(_config);
-}
-
-XloggerAppender::XloggerAppender(const XLogConfig& _config, uint64_t _max_byte_size, bool _one_shot)
-: config_(_config), mode_(_config.mode_), max_file_size_(_max_byte_size) {
+XloggerAppender::~XloggerAppender() {
+    StopBackgroundTasks();
 }
 
 void XloggerAppender::Write(const XLoggerInfo* _info, const char* _log) {
@@ -179,7 +183,13 @@ void XloggerAppender::Write(const XLoggerInfo* _info, const char* _log) {
 
     thread_local uint32_t recursion_count = 0;
     thread_local std::string recursion_str;
-    recursion_count++;
+    if (recursion_count >= 10)
+        return;
+    ++recursion_count;
+    struct RecursionGuard {
+        uint32_t& depth;
+        ~RecursionGuard() { --depth; }
+    } guard{recursion_count};
 
     if (consolelog_open_)
         ConsoleLog(_info, _log);
@@ -192,11 +202,8 @@ void XloggerAppender::Write(const XLoggerInfo* _info, const char* _log) {
     }
 
     if (2 <= recursion_count && recursion_str.empty()) {
-        if (recursion_count > 10)
-            return;
-
         recursion_str.resize(kMaxDumpLength);
-        XLoggerInfo info = *_info;
+        XLoggerInfo info = _info ? *_info : XLoggerInfo{};
         info.level = kLevelFatal;
 
         char recursive_log[256] = {0};
@@ -219,12 +226,15 @@ void XloggerAppender::Write(const XLoggerInfo* _info, const char* _log) {
             recursion_str.clear();
         }
 
-        if (kAppenderSync == mode_)
-            __WriteSync(_info, _log);
-        else
-            __WriteAsync(_info, _log);
+        WriteRecord(_info, _log);
     }
-    recursion_count--;
+}
+
+void XloggerAppender::WriteRecord(const XLoggerInfo* info, const char* log) {
+    if (mode_ == kAppenderSync)
+        __WriteSync(info, log);
+    else
+        __WriteAsync(info, log);
 }
 
 void XloggerAppender::SetMode(TAppenderMode _mode) {
@@ -250,9 +260,10 @@ void XloggerAppender::FlushSync() {
         return;
     }
 
+    std::lock_guard sync_write(mutex_sync_write_);
     std::unique_lock lock_buffer(mutex_buffer_async_);
 
-    if (nullptr == log_buff_)
+    if (log_close_ || !log_buff_)
         return;
 
     AutoBuffer tmp;
@@ -264,7 +275,13 @@ void XloggerAppender::FlushSync() {
         __Log2File(tmp.Ptr(), tmp.Length(), false);
 }
 
-void XloggerAppender::Close() {
+void XloggerAppender::StopBackgroundTasks() {
+    {
+        std::lock_guard lock(mutex_buffer_async_);
+        log_close_ = true;
+    }
+    cond_buffer_async_.notify_one();
+
     for (auto* task : {thread_timeout_cache_.get(), thread_moveold_.get(), thread_timeout_log_.get()}) {
         if (task)
             task->RequestCancel();
@@ -273,43 +290,35 @@ void XloggerAppender::Close() {
     thread_moveold_.reset();
     thread_timeout_log_.reset();
 
-    if (log_close_) return;
-
-    char mark_info[512] = {0};
-    __GetMarkInfo(mark_info, sizeof(mark_info));
-    char appender_info[728] = {0};
-    snprintf(appender_info, sizeof(appender_info), "$$$$$$$$$$" __DATE__ "$$$" __TIME__ "$$$$$$$$$$%s\n", mark_info);
-    Write(nullptr, appender_info);
-
-    {
-        std::lock_guard lock(mutex_buffer_async_);
-        log_close_ = true;
-    }
-    cond_buffer_async_.notify_one();
     if (thread_async_.joinable())
         thread_async_.join();
+}
 
-    std::unique_lock buffer_lock(mutex_buffer_async_);
+void XloggerAppender::Close() {
+    if (!log_close_) {
+        char mark_info[512] = {0};
+        __GetMarkInfo(mark_info, sizeof(mark_info));
+        char appender_info[728] = {0};
+        snprintf(appender_info, sizeof(appender_info), "$$$$$$$$$$" __DATE__ "$$$" __TIME__ "$$$$$$$$$$%s\n", mark_info);
+        WriteRecord(nullptr, appender_info);
+    }
+
+    StopBackgroundTasks();
+
+    // A foreground flush may already have taken ownership of pending records.
+    std::lock_guard sync_write(mutex_sync_write_);
+    // Retire the buffer after both encoding and file error reporting have finished.
+    std::scoped_lock lock(mutex_buffer_async_, mutex_log_file_);
+    log_buff_.reset();
     if (mmap_file_.data()) {
         memset(mmap_file_.data(), 0, kBufferBlockLength);
         mmap_file_.Close();
-    } else {
-        if (nullptr != log_buff_) {
-            delete[](char*)((log_buff_->GetData()).Ptr());
-        }
     }
-
-    delete log_buff_;
-    log_buff_ = nullptr;
-    buffer_lock.unlock();
-
-    std::unique_lock lock(mutex_log_file_);
+    heap_buffer_.reset();
     __CloseLogFile();
 }
 
 void XloggerAppender::Open(const XLogConfig& _config) {
-    config_ = _config;
-
     std::unique_lock dir_attr_lock(sg_mutex_dir_attr);
     if (!config_.cachedir_.empty()) {
         fs::create_directories(PathFromUtf8(config_.cachedir_));
@@ -334,18 +343,12 @@ void XloggerAppender::Open(const XLogConfig& _config) {
 #endif
     dir_attr_lock.unlock();
 
-    tickcount_t tick;
-    tick.gettickcount();
+    const auto tick = LogClockNow();
 
     const bool use_mmap = mmap_file_.Open(PathFromUtf8(MmapFilePath(config_)), kBufferBlockLength);
-    auto heap_buffer = use_mmap ? nullptr : std::make_unique<char[]>(kBufferBlockLength);
-    log_buff_ = MakeLogBuffer(use_mmap ? mmap_file_.data() : heap_buffer.get(), config_);
-    heap_buffer.release();
-
-    if (nullptr == log_buff_->GetData().Ptr()) {
-        mmap_file_.Close();
-        return;
-    }
+    if (!use_mmap)
+        heap_buffer_ = std::make_unique<char[]>(kBufferBlockLength);
+    log_buff_ = MakeLogBuffer(use_mmap ? mmap_file_.data() : heap_buffer_.get(), config_);
 
     AutoBuffer buffer;
     log_buff_->Flush(buffer);
@@ -362,24 +365,24 @@ void XloggerAppender::Open(const XLogConfig& _config) {
         WriteTips2File("~~~~~ end of mmap ~~~~~%s\n", mark_info);
     }
 
-    tickcountdiff_t get_mmap_time = tickcount_t().gettickcount() - tick;
+    const auto get_mmap_time = LogClockNow() - tick;
 
     char appender_info[728] = {0};
     snprintf(appender_info, sizeof(appender_info), "^^^^^^^^^^" __DATE__ "^^^" __TIME__ "^^^^^^^^^^%s", mark_info);
 
-    Write(nullptr, appender_info);
+    WriteRecord(nullptr, appender_info);
     char logmsg[256] = {0};
-    snprintf(logmsg, sizeof(logmsg), "get mmap time: %" PRId64, (int64_t)get_mmap_time);
-    Write(nullptr, logmsg);
+    snprintf(logmsg, sizeof(logmsg), "get mmap time: %" PRId64, static_cast<int64_t>(get_mmap_time.count()));
+    WriteRecord(nullptr, logmsg);
 
-    Write(nullptr, "MARS_URL: " MARS_URL);
-    Write(nullptr, "MARS_PATH: " MARS_PATH);
-    Write(nullptr, "MARS_REVISION: " MARS_REVISION);
-    Write(nullptr, "MARS_BUILD_TIME: " MARS_BUILD_TIME);
-    Write(nullptr, "MARS_BUILD_JOB: " MARS_TAG);
+    WriteRecord(nullptr, "MARS_URL: " MARS_URL);
+    WriteRecord(nullptr, "MARS_PATH: " MARS_PATH);
+    WriteRecord(nullptr, "MARS_REVISION: " MARS_REVISION);
+    WriteRecord(nullptr, "MARS_BUILD_TIME: " MARS_BUILD_TIME);
+    WriteRecord(nullptr, "MARS_BUILD_JOB: " MARS_TAG);
 
     snprintf(logmsg, sizeof(logmsg), "log appender mode:%d, use mmap:%d", static_cast<int>(mode_.load()), use_mmap);
-    Write(nullptr, logmsg);
+    WriteRecord(nullptr, logmsg);
 
     if (!config_.cachedir_.empty()) {
         fs::space_info info = fs::space(PathFromUtf8(config_.cachedir_));
@@ -389,7 +392,7 @@ void XloggerAppender::Open(const XLogConfig& _config) {
                  info.capacity,
                  info.free,
                  info.available);
-        Write(nullptr, logmsg);
+        WriteRecord(nullptr, logmsg);
     }
 
     fs::space_info info = fs::space(PathFromUtf8(config_.logdir_));
@@ -399,7 +402,7 @@ void XloggerAppender::Open(const XLogConfig& _config) {
              info.capacity,
              info.free,
              info.available);
-    Write(nullptr, logmsg);
+    WriteRecord(nullptr, logmsg);
     SetMode(_config.mode_);
 }
 
@@ -537,7 +540,7 @@ void XloggerAppender::__DelTimeoutFile(const std::string& _log_path) {
         for (fs::directory_iterator iter(path); iter != end_iter; ++iter) {
             const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - fs::last_write_time(iter->path()));
 
-            if (age > std::chrono::seconds(max_alive_time_)) {
+            if (age > std::chrono::seconds(max_alive_time_.load())) {
                 if (fs::is_regular_file(iter->status())
                     && iter->path().extension() == (std::string(".") + LOG_EXT)) {
                     fs::remove(iter->path());
@@ -567,53 +570,46 @@ bool XloggerAppender::__AppendFile(const std::string& _src_file, const std::stri
         return true;
     }
 
-    FILE* src_file = fopen(_src_file.c_str(), "rb");
+    File src_file(fopen(_src_file.c_str(), "rb"));
 
     if (nullptr == src_file) {
         return false;
     }
 
-    FILE* dest_file = fopen(_dst_file.c_str(), "ab");
-
-    if (nullptr == dest_file) {
-        fclose(src_file);
+    File dest_file(fopen(_dst_file.c_str(), "ab"));
+    if (!dest_file)
         return false;
-    }
 
-    fseek(src_file, 0, SEEK_END);
-    long src_file_len = ftell(src_file);
-    long dst_file_len = ftell(dest_file);
-    fseek(src_file, 0, SEEK_SET);
+    fseek(src_file.get(), 0, SEEK_END);
+    long src_file_len = ftell(src_file.get());
+    long dst_file_len = ftell(dest_file.get());
+    fseek(src_file.get(), 0, SEEK_SET);
 
     char buffer[4096] = {0};
 
     while (true) {
-        if (feof(src_file))
+        if (feof(src_file.get()))
             break;
 
-        size_t read_ret = fread(buffer, 1, sizeof(buffer), src_file);
+        size_t read_ret = fread(buffer, 1, sizeof(buffer), src_file.get());
 
         if (read_ret == 0)
             break;
 
-        if (ferror(src_file))
+        if (ferror(src_file.get()))
             break;
 
-        fwrite(buffer, 1, read_ret, dest_file);
+        fwrite(buffer, 1, read_ret, dest_file.get());
 
-        if (ferror(dest_file))
+        if (ferror(dest_file.get()))
             break;
     }
 
-    if (dst_file_len + src_file_len > ftell(dest_file)) {
-        ftruncate(fileno(dest_file), dst_file_len);
-        fclose(src_file);
-        fclose(dest_file);
+    if (dst_file_len + src_file_len > ftell(dest_file.get())) {
+        ftruncate(fileno(dest_file.get()), dst_file_len);
         return false;
     }
 
-    fclose(src_file);
-    fclose(dest_file);
 
     return true;
 }
@@ -730,11 +726,10 @@ bool XloggerAppender::__OpenLogFile(const std::string& _log_dir) {
             return true;
         }
 
-        fclose(logfile_);
-        logfile_ = nullptr;
+        logfile_.reset();
     }
 
-    uint64_t now_tick = gettickcount();
+    const auto now_tick = LogClockNow();
     time_t now_time = tv.tv_sec;
 
     openfiletime_ = tv.tv_sec;
@@ -743,7 +738,7 @@ bool XloggerAppender::__OpenLogFile(const std::string& _log_dir) {
     __MakeLogFileName(tv, _log_dir, config_.nameprefix_.c_str(), LOG_EXT, logfilepath, 1024);
 
     if (now_time < last_time_) {
-        logfile_ = fopen(last_file_path_, "ab");
+        logfile_.reset(fopen(last_file_path_, "ab"));
 
         if (nullptr == logfile_) {
             __WriteTips2Console("open file error:%d %s, path:%s", errno, strerror(errno), last_file_path_);
@@ -755,13 +750,15 @@ bool XloggerAppender::__OpenLogFile(const std::string& _log_dir) {
         return nullptr != logfile_;
     }
 
-    logfile_ = fopen(logfilepath, "ab");
+    logfile_.reset(fopen(logfilepath, "ab"));
 
     if (nullptr == logfile_) {
         __WriteTips2Console("open file error:%d %s, path:%s", errno, strerror(errno), logfilepath);
     }
 
-    if (0 != last_time_ && (now_time - last_time_) > (time_t)((now_tick - last_tick_) / 1000 + 300)) {
+    const auto elapsed = now_tick - last_tick_;
+    if (last_time_ != 0 && std::chrono::seconds(now_time - last_time_)
+                               > std::chrono::duration_cast<std::chrono::seconds>(elapsed) + std::chrono::minutes(5)) {
         struct tm tm_tmp = mars_local_time(last_time_);
         char last_time_str[64] = {0};
         strftime(last_time_str, sizeof(last_time_str), "%Y-%m-%d %z %H:%M:%S", &tm_tmp);
@@ -773,16 +770,16 @@ bool XloggerAppender::__OpenLogFile(const std::string& _log_dir) {
         char log[1024] = {0};
         snprintf(log,
                  sizeof(log),
-                 "[F][ last log file:%s from %s to %s, time_diff:%" PRIdMAX ", tick_diff:%" PRIu64 "\n",
+                 "[F][ last log file:%s from %s to %s, time_diff:%" PRIdMAX ", tick_diff:%" PRId64 "\n",
                  last_file_path_,
                  last_time_str,
                  now_time_str,
                  static_cast<intmax_t>(now_time - last_time_),
-                 now_tick - last_tick_);
+                 static_cast<int64_t>(elapsed.count()));
 
         AutoBuffer tmp_buff;
         log_buff_->Write(log, strnlen(log, sizeof(log)), tmp_buff);
-        __WriteFile(tmp_buff.Ptr(), tmp_buff.Length(), logfile_);
+        __WriteFile(tmp_buff.Ptr(), tmp_buff.Length(), logfile_.get());
     }
 
     memcpy(last_file_path_, logfilepath, sizeof(last_file_path_));
@@ -800,8 +797,7 @@ void XloggerAppender::__CloseLogFile() {
         return;
 
     openfiletime_ = 0;
-    fclose(logfile_);
-    logfile_ = nullptr;
+    logfile_.reset();
 }
 
 bool XloggerAppender::__CacheLogs() {
@@ -833,9 +829,12 @@ void XloggerAppender::__Log2File(const void* _data, size_t _len, bool _move_file
 
     std::unique_lock lock_file(mutex_log_file_);
 
+    if (!log_buff_)
+        return;
+
     if (config_.cachedir_.empty()) {
         if (__OpenLogFile(config_.logdir_)) {
-            __WriteFile(_data, _len, logfile_);
+            __WriteFile(_data, _len, logfile_.get());
             if (kAppenderAsync == mode_) {
                 __CloseLogFile();
             }
@@ -851,7 +850,7 @@ void XloggerAppender::__Log2File(const void* _data, size_t _len, bool _move_file
 
     bool cache_logs = __CacheLogs();
     if ((cache_logs || fs::exists(PathFromUtf8(logcachefilepath))) && __OpenLogFile(config_.cachedir_)) {
-        __WriteFile(_data, _len, logfile_);
+        __WriteFile(_data, _len, logfile_.get());
         if (kAppenderAsync == mode_) {
             __CloseLogFile();
         }
@@ -874,7 +873,7 @@ void XloggerAppender::__Log2File(const void* _data, size_t _len, bool _move_file
     bool write_success = false;
     bool open_success = __OpenLogFile(config_.logdir_);
     if (open_success) {
-        write_success = __WriteFile(_data, _len, logfile_);
+        write_success = __WriteFile(_data, _len, logfile_.get());
         if (kAppenderAsync == mode_) {
             __CloseLogFile();
         }
@@ -886,7 +885,7 @@ void XloggerAppender::__Log2File(const void* _data, size_t _len, bool _move_file
         }
 
         if (__OpenLogFile(config_.cachedir_)) {
-            __WriteFile(_data, _len, logfile_);
+            __WriteFile(_data, _len, logfile_.get());
             if (kAppenderAsync == mode_) {
                 __CloseLogFile();
             }
@@ -905,8 +904,14 @@ void XloggerAppender::WriteTips2File(const char* _tips_format, ...) {
     vsnprintf(tips_info, sizeof(tips_info), _tips_format, ap);
     va_end(ap);
 
+    std::lock_guard sync_write(mutex_sync_write_);
     AutoBuffer tmp_buff;
-    log_buff_->Write(tips_info, strnlen(tips_info, sizeof(tips_info)), tmp_buff);
+    {
+        std::lock_guard lock(mutex_buffer_async_);
+        if (log_close_ || !log_buff_)
+            return;
+        log_buff_->Write(tips_info, strnlen(tips_info, sizeof(tips_info)), tmp_buff);
+    }
 
     __Log2File(tmp_buff.Ptr(), tmp_buff.Length(), false);
 }
@@ -938,6 +943,7 @@ void XloggerAppender::__WriteSync(const XLoggerInfo* _info, const char* _log) {
     PtrBuffer log(temp, 0, sizeof(temp));
     log_formater(_info, _log, log);
 
+    std::lock_guard sync_write(mutex_sync_write_);
     std::unique_lock lock(mutex_buffer_async_);
     if (log_close_ || nullptr == log_buff_)
         return;
@@ -1044,15 +1050,15 @@ const char* XloggerAppender::Dump(const void* _dumpbuffer, size_t _len) {
              (int)_len);
     filepath += file_name;
 
-    FILE* fileid = fopen(filepath.c_str(), "wb");
+    File fileid(fopen(filepath.c_str(), "wb"));
 
     if (nullptr == fileid) {
         ASSERT2(nullptr != fileid, "%s, errno:(%d, %s)", filepath.c_str(), errno, strerror(errno));
         return "";
     }
 
-    fwrite(_dumpbuffer, _len, 1, fileid);
-    fclose(fileid);
+    fwrite(_dumpbuffer, _len, 1, fileid.get());
+    fileid.reset();
 
     buffer += "\n dump file to ";
     buffer += filepath + " :\n";
@@ -1173,27 +1179,26 @@ void XloggerAppender::TreatMappingAsFileAndFlush(TFileIOAction* _result) {
     }
 
     // read buffer
-    FILE* treat_mapping_as_file = fopen(mmap_file_path.c_str(), "rb");
+    File treat_mapping_as_file(fopen(mmap_file_path.c_str(), "rb"));
     if (!treat_mapping_as_file) {
         if (_result)
             *_result = kActionOpenFailed;
         return;
     }
 
-    std::unique_ptr<char[]> data(new char[kBufferBlockLength]());
-    size_t bytes_read = fread(data.get(), 1, kBufferBlockLength, treat_mapping_as_file);
-    if (kBufferBlockLength != bytes_read || ferror(treat_mapping_as_file)) {
+    auto data = std::make_unique<char[]>(kBufferBlockLength);
+    size_t bytes_read = fread(data.get(), 1, kBufferBlockLength, treat_mapping_as_file.get());
+    if (kBufferBlockLength != bytes_read || ferror(treat_mapping_as_file.get())) {
         if (_result)
             *_result = kActionReadFailed;
-        fclose(treat_mapping_as_file);
         return;
     }
-    fclose(treat_mapping_as_file);
+    treat_mapping_as_file.reset();
 
     // init and set flag
     log_buff_ = MakeLogBuffer(data.get(), config_);
-    data.release();
-	
+    heap_buffer_ = std::move(data);
+
     log_close_ = false;
 
     // try write mapping to logfile
@@ -1226,134 +1231,126 @@ void XloggerAppender::TreatMappingAsFileAndFlush(TFileIOAction* _result) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
-static XloggerAppender* sg_default_appender = nullptr;
-static bool sg_release_guard = true;
+static std::mutex sg_lifecycle_mutex;
+static std::mutex sg_default_mutex;
+static std::shared_ptr<XloggerAppender> sg_default_appender;
 static bool sg_default_console_log_open = false;
-static std::mutex sg_mutex;
 static uint64_t sg_max_byte_size = 0;
 static long sg_max_alive_time = 0;
-void xlogger_appender(const XLoggerInfo* _info, const char* _log) {
-    if (sg_release_guard) {
-        return;
-    }
-    sg_default_appender->Write(_info, _log);
+
+static std::shared_ptr<XloggerAppender> GetDefaultAppender() {
+    std::lock_guard lock(sg_default_mutex);
+    return sg_default_appender;
 }
 
-static void appender_release_default_appender() {
-    if (sg_release_guard) {
-        return;
-    }
-    sg_release_guard = true;
-    sg_default_appender->Close();
-    //  本函数只会在 exit 的时候调用，所以干脆不释放对象了，防止多线程导致的 crash
+void xlogger_appender(const XLoggerInfo* _info, const char* _log) {
+    if (auto appender = GetDefaultAppender())
+        appender->Write(_info, _log);
 }
 
 void appender_open(const XLogConfig& _config) {
     assert(!_config.logdir_.empty());
-
-    if (nullptr != sg_default_appender) {
-        sg_default_appender->WriteTips2File("appender has already been opened. _dir:%s _nameprefix:%s",
-                                            _config.logdir_.c_str(),
-                                            _config.nameprefix_.c_str());
+    std::lock_guard lifecycle_lock(sg_lifecycle_mutex);
+    if (auto appender = GetDefaultAppender()) {
+        appender->WriteTips2File("appender has already been opened. _dir:%s _nameprefix:%s",
+                                _config.logdir_.c_str(), _config.nameprefix_.c_str());
         return;
     }
 
-    sg_default_appender = XloggerAppender::NewInstance(_config, sg_max_byte_size);
-    sg_default_appender->SetConsoleLog(sg_default_console_log_open);
-    if (sg_max_alive_time > 0) {
-        sg_default_appender->SetMaxAliveDuration(sg_max_alive_time);
+    uint64_t max_byte_size;
+    {
+        std::lock_guard lock(sg_default_mutex);
+        max_byte_size = sg_max_byte_size;
     }
-    sg_release_guard = false;
+    auto appender = XloggerAppender::NewInstance(_config, max_byte_size);
+    {
+        std::lock_guard lock(sg_default_mutex);
+        appender->SetConsoleLog(sg_default_console_log_open);
+        appender->SetMaxFileSize(sg_max_byte_size);
+        if (sg_max_alive_time > 0)
+            appender->SetMaxAliveDuration(sg_max_alive_time);
+        sg_default_appender = std::move(appender);
+    }
     xlogger_SetAppender(&xlogger_appender);
-    BOOT_RUN_EXIT(appender_release_default_appender);
+    BOOT_RUN_EXIT(appender_close);
 }
 
 void appender_flush() {
-    if (sg_release_guard) {
-        return;
-    }
-    sg_default_appender->Flush();
+    if (auto appender = GetDefaultAppender())
+        appender->Flush();
 }
 
 void appender_flush_sync() {
-    if (sg_release_guard) {
-        return;
-    }
-    sg_default_appender->FlushSync();
+    if (auto appender = GetDefaultAppender())
+        appender->FlushSync();
 }
 
 void appender_close() {
-    std::unique_lock lock(sg_mutex);
-    if (sg_release_guard) {
-        return;
+    std::lock_guard lifecycle_lock(sg_lifecycle_mutex);
+    std::shared_ptr<XloggerAppender> appender;
+    {
+        std::lock_guard lock(sg_default_mutex);
+        appender = std::move(sg_default_appender);
     }
-    sg_release_guard = true;
-    XloggerAppender::DelayRelease(std::exchange(sg_default_appender, nullptr));
+    if (appender)
+        appender->Close();
 }
 
 void appender_setmode(TAppenderMode _mode) {
-    if (sg_release_guard) {
-        return;
-    }
-    sg_default_appender->SetMode(_mode);
+    if (auto appender = GetDefaultAppender())
+        appender->SetMode(_mode);
 }
 
 bool appender_get_current_log_path(char* _log_path, unsigned int _len) {
-    if (sg_release_guard) {
-        return false;
-    }
-    return sg_default_appender->GetCurrentLogPath(_log_path, _len);
+    auto appender = GetDefaultAppender();
+    return appender && appender->GetCurrentLogPath(_log_path, _len);
 }
 
 bool appender_get_current_log_cache_path(char* _logPath, unsigned int _len) {
-    if (sg_release_guard) {
-        return false;
-    }
-    return sg_default_appender->GetCurrentLogCachePath(_logPath, _len);
+    auto appender = GetDefaultAppender();
+    return appender && appender->GetCurrentLogCachePath(_logPath, _len);
 }
 
 void appender_set_console_log(bool _is_open) {
+    std::lock_guard lock(sg_default_mutex);
     sg_default_console_log_open = _is_open;
-    if (sg_release_guard) {
-        return;
-    }
-    sg_default_appender->SetConsoleLog(_is_open);
+    if (sg_default_appender)
+        sg_default_appender->SetConsoleLog(_is_open);
 }
 
 void appender_set_max_file_size(uint64_t _max_byte_size) {
+    std::lock_guard lock(sg_default_mutex);
     sg_max_byte_size = _max_byte_size;
-    if (sg_release_guard) {
-        return;
-    }
-    sg_default_appender->SetMaxFileSize(_max_byte_size);
+    if (sg_default_appender)
+        sg_default_appender->SetMaxFileSize(_max_byte_size);
 }
 
 void appender_set_max_alive_duration(long _max_time) {
+    std::lock_guard lock(sg_default_mutex);
     sg_max_alive_time = _max_time;
-    if (sg_release_guard) {
-        return;
-    }
-    sg_default_appender->SetMaxAliveDuration(_max_time);
+    if (sg_default_appender)
+        sg_default_appender->SetMaxAliveDuration(_max_time);
 }
 
 bool appender_getfilepath_from_timespan(int _timespan, const char* _prefix, std::vector<std::string>& _filepath_vec) {
-    if (sg_release_guard) {
-        return false;
-    }
-    return sg_default_appender->GetfilepathFromTimespan(_timespan, _prefix, _filepath_vec);
+    auto appender = GetDefaultAppender();
+    return appender && appender->GetfilepathFromTimespan(_timespan, _prefix, _filepath_vec);
 }
 
 bool appender_make_logfile_name(int _timespan, const char* _prefix, std::vector<std::string>& _filepath_vec) {
-    if (sg_release_guard) {
-        return false;
-    }
-    return sg_default_appender->MakeLogfileName(_timespan, _prefix, _filepath_vec);
+    auto appender = GetDefaultAppender();
+    return appender && appender->MakeLogfileName(_timespan, _prefix, _filepath_vec);
 }
 
 void appender_oneshot_flush(const XLogConfig& _config, TFileIOAction* _result) {
-    std::unique_ptr<XloggerAppender> scoped_appender(XloggerAppender::NewInstance(_config, sg_max_byte_size, true));
-    scoped_appender->TreatMappingAsFileAndFlush(_result);
-    scoped_appender->Close();
+    uint64_t max_byte_size;
+    {
+        std::lock_guard lock(sg_default_mutex);
+        max_byte_size = sg_max_byte_size;
+    }
+    auto appender = XloggerAppender::NewOneShot(_config, max_byte_size);
+    appender->TreatMappingAsFileAndFlush(_result);
+    appender->Close();
 }
 
 }  // namespace xlog
@@ -1362,10 +1359,8 @@ void appender_oneshot_flush(const XLogConfig& _config, TFileIOAction* _result) {
 using namespace mars::xlog;
 
 const char* xlogger_dump(const void* _dumpbuffer, size_t _len) {
-    if (sg_release_guard) {
-        return "";
-    }
-    return sg_default_appender->Dump(_dumpbuffer, _len);
+    auto appender = GetDefaultAppender();
+    return appender ? appender->Dump(_dumpbuffer, _len) : "";
 }
 
 const char* xlogger_memory_dump(const void* _dumpbuffer, size_t _len) {
@@ -1387,7 +1382,7 @@ const char* xlogger_memory_dump(const void* _dumpbuffer, size_t _len) {
     buffer += std::to_string(_len) + " bytes:\n";
 
     int calc_dst_buffer_len = calc_dump_required_length(32) + 1;
-    char* dst_buffer = new char[calc_dst_buffer_len];
+    auto dst_buffer = std::make_unique_for_overwrite<char[]>(calc_dst_buffer_len);
 
     for (int src_offset = 0; src_offset < (int)_len && buffer.size() < kMaxDumpLength;) {
         int dst_leftbytes = kMaxDumpLength - buffer.size();
@@ -1400,9 +1395,9 @@ const char* xlogger_memory_dump(const void* _dumpbuffer, size_t _len) {
             break;
         }
 
-        memset(dst_buffer, 0, calc_dst_buffer_len);
-        to_string(src_buffer + src_offset, bytes, dst_buffer);
-        buffer += dst_buffer;
+        memset(dst_buffer.get(), 0, calc_dst_buffer_len);
+        to_string(src_buffer + src_offset, bytes, dst_buffer.get());
+        buffer += dst_buffer.get();
 
         src_offset += bytes;
 
@@ -1410,6 +1405,5 @@ const char* xlogger_memory_dump(const void* _dumpbuffer, size_t _len) {
         buffer += "\n";
     }
 
-    delete[] dst_buffer;
     return buffer.c_str();
 }

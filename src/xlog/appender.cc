@@ -44,6 +44,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -53,7 +54,6 @@
 
 #include "comm/assert/__assert.h"
 #include "comm/autobuffer.h"
-#include "comm/bootrun.h"
 #include "comm/delayed_task.h"
 #include "comm/mmap_util.h"
 #include "comm/ptrbuffer.h"
@@ -1272,7 +1272,7 @@ void appender_open(const XLogConfig& _config) {
         sg_default_appender = std::move(appender);
     }
     xlogger_SetAppender(&xlogger_appender);
-    BOOT_RUN_EXIT(appender_close);
+    [[maybe_unused]] static const int close_registered = std::atexit(appender_close);
 }
 
 void appender_flush() {

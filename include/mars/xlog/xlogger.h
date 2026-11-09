@@ -27,9 +27,6 @@
 #include <sys/cdefs.h>
 #endif
 
-#ifdef __cplusplus
-#include "mars/comm/string_cast.h"
-#endif
 #include "preprocessor.h"
 #include "xloggerbase.h"
 
@@ -42,9 +39,46 @@
 #define xlogger_Write(...) ((void)0)
 #endif
 
+#define __CONCAT_IMPL__(x, y) x##y
+#define __CONCAT__(x, y) __CONCAT_IMPL__(x, y)
+#define __ANONYMOUS_VARIABLE__(x) __CONCAT__(x, __LINE__)
+
+#define __XFILE__ (__FILE__)
+
+#ifndef _MSC_VER
+//#define __XFUNCTION__		  __PRETTY_FUNCTION__
+#define __XFUNCTION__ __FUNCTION__
+#else
+// Definitely, VC6 not support this feature!
+#if _MSC_VER > 1200
+//#define __XFUNCTION__	__FUNCSIG__
+#define __XFUNCTION__ __FUNCTION__
+#else
+#define __XFUNCTION__ "N/A"
+#warning " is not supported by this compiler"
+#endif
+#endif
+
+// xlogger define
+
+#ifndef XLOGGER_TAG
+#define XLOGGER_TAG ""
+#endif
+
+/* tips: this code replace or change the tag in source file
+static const char* __my_xlogger_tag = "prefix_"XLOGGER_TAG"_suffix";
+#undef XLOGGER_TAG
+#define XLOGGER_TAG __my_xlogger_tag
+*/
+
+#define xdump xlogger_dump
+#define XLOGGER_ROUTER_OUTPUT(op1, op, num) PP_IF(num, PP_IF(PP_DEC(num), op, op1), )
+
 #ifdef __cplusplus
 #include <string>
 #include <utility>
+
+#include "mars/comm/string_cast.h"
 
 #define XLOGGER_STATIC_ASSERT(...) static_assert((__VA_ARGS__), #__VA_ARGS__)
 
@@ -289,104 +323,6 @@ class XScopeTracer {
     std::string m_exitmsg;
 };
 
-#endif  // cpp
-
-#define __CONCAT_IMPL__(x, y) x##y
-#define __CONCAT__(x, y) __CONCAT_IMPL__(x, y)
-#define __ANONYMOUS_VARIABLE__(x) __CONCAT__(x, __LINE__)
-
-#define __XFILE__ (__FILE__)
-
-#ifndef _MSC_VER
-//#define __XFUNCTION__		  __PRETTY_FUNCTION__
-#define __XFUNCTION__ __FUNCTION__
-#else
-// Definitely, VC6 not support this feature!
-#if _MSC_VER > 1200
-//#define __XFUNCTION__	__FUNCSIG__
-#define __XFUNCTION__ __FUNCTION__
-#else
-#define __XFUNCTION__ "N/A"
-#warning " is not supported by this compiler"
-#endif
-#endif
-
-// xlogger define
-
-#ifndef XLOGGER_TAG
-#define XLOGGER_TAG ""
-#endif
-
-/* tips: this code replace or change the tag in source file
-static const char* __my_xlogger_tag = "prefix_"XLOGGER_TAG"_suffix";
-#undef XLOGGER_TAG
-#define XLOGGER_TAG __my_xlogger_tag
-*/
-
-#define xdump xlogger_dump
-#define XLOGGER_ROUTER_OUTPUT(op1, op, num) PP_IF(num, PP_IF(PP_DEC(num), op, op1), )
-
-#if !defined(__cplusplus)
-
-#ifdef __GNUC__
-__attribute__((__format__(printf, 2, 3)))
-#endif
-static __inline void
-__xlogger_c_write(const XLoggerInfo* _info, const char* _log, ...) {
-    xlogger_Write(_info, _log);
-}
-
-#define XLOGGER_ROUTER(...)                                      \
-    XLOGGER_ROUTER_OUTPUT(__xlogger_c_write(&info, __VA_ARGS__), \
-                          xlogger_Print(&info, __VA_ARGS__),     \
-                          PP_NUM_PARAMS(__VA_ARGS__))
-#define xlogger2(level, tag, file, func, line, ...)                                                                   \
-    if ((!xlogger_IsEnabledFor(level)))                                                                               \
-        ;                                                                                                             \
-    else {                                                                                                            \
-        XLoggerInfo info = {level, tag, file, func, line, {0, 0}, -1, -1, -1, 0};                                 \
-        gettimeofday(&info.timeval, NULL);                                                                             \
-        XLOGGER_ROUTER(__VA_ARGS__);                                                                                  \
-    }
-
-#define xlogger2_if(exp, level, tag, file, func, line, ...)                                                           \
-    if (!(exp) || !xlogger_IsEnabledFor(level))                                                                       \
-        ;                                                                                                             \
-    else {                                                                                                            \
-        XLoggerInfo info = {level, tag, file, func, line, {0, 0}, -1, -1, -1, 0};                                 \
-        gettimeofday(&info.timeval, NULL);                                                                            \
-        XLOGGER_ROUTER(__VA_ARGS__);                                                                                  \
-    }
-
-#define __xlogger_c_impl(level, ...) xlogger2(level, XLOGGER_TAG, __XFILE__, __XFUNCTION__, __LINE__, __VA_ARGS__)
-#define __xlogger_c_impl_if(level, exp, ...) \
-    xlogger2_if(exp, level, XLOGGER_TAG, __XFILE__, __XFUNCTION__, __LINE__, __VA_ARGS__)
-
-#define xverbose2(...) __xlogger_c_impl(kLevelVerbose, __VA_ARGS__)
-#define xdebug2(...) __xlogger_c_impl(kLevelDebug, __VA_ARGS__)
-#define xinfo2(...) __xlogger_c_impl(kLevelInfo, __VA_ARGS__)
-#define xwarn2(...) __xlogger_c_impl(kLevelWarn, __VA_ARGS__)
-#define xerror2(...) __xlogger_c_impl(kLevelError, __VA_ARGS__)
-#define xfatal2(...) __xlogger_c_impl(kLevelFatal, __VA_ARGS__)
-
-#define xverbose2_if(exp, ...) __xlogger_c_impl_if(kLevelVerbose, exp, __VA_ARGS__)
-#define xdebug2_if(exp, ...) __xlogger_c_impl_if(kLevelDebug, exp, __VA_ARGS__)
-#define xinfo2_if(exp, ...) __xlogger_c_impl_if(kLevelInfo, exp, __VA_ARGS__)
-#define xwarn2_if(exp, ...) __xlogger_c_impl_if(kLevelWarn, exp, __VA_ARGS__)
-#define xerror2_if(exp, ...) __xlogger_c_impl_if(kLevelError, exp, __VA_ARGS__)
-#define xfatal2_if(exp, ...) __xlogger_c_impl_if(kLevelFatal, exp, __VA_ARGS__)
-
-#define xassert2(exp, ...)                                                                                            \
-    if (((exp) || !xlogger_IsEnabledFor(kLevelFatal)))                                                                \
-        ;                                                                                                             \
-    else {                                                                                                            \
-        XLoggerInfo info = {kLevelFatal, XLOGGER_TAG, __XFILE__, __XFUNCTION__, __LINE__, {0, 0}, -1, -1, -1, 0}; \
-        gettimeofday(&info.timeval, NULL);                                                                               \
-        xlogger_AssertP(&info, #exp, __VA_ARGS__);                                                                    \
-    }
-//"##__VA_ARGS__" remove "," if NULL
-#else
-
 #ifndef XLOGGER_HOOK
 #define XLOGGER_HOOK NULL
 #endif
@@ -504,5 +440,64 @@ __xlogger_c_write(const XLoggerInfo* _info, const char* _log, ...) {
 #define XENDL "\n"
 #define XTHIS "@%p, ", this
 
+#else
+
+#ifdef __GNUC__
+__attribute__((__format__(printf, 2, 3)))
+#endif
+static __inline void
+__xlogger_c_write(const XLoggerInfo* _info, const char* _log, ...) {
+    xlogger_Write(_info, _log);
+}
+
+#define XLOGGER_ROUTER(...)                                      \
+    XLOGGER_ROUTER_OUTPUT(__xlogger_c_write(&info, __VA_ARGS__), \
+                          xlogger_Print(&info, __VA_ARGS__),     \
+                          PP_NUM_PARAMS(__VA_ARGS__))
+#define xlogger2(level, tag, file, func, line, ...)                                                                   \
+    if ((!xlogger_IsEnabledFor(level)))                                                                               \
+        ;                                                                                                             \
+    else {                                                                                                            \
+        XLoggerInfo info = {level, tag, file, func, line, {0, 0}, -1, -1, -1, 0};                                 \
+        gettimeofday(&info.timeval, NULL);                                                                             \
+        XLOGGER_ROUTER(__VA_ARGS__);                                                                                  \
+    }
+
+#define xlogger2_if(exp, level, tag, file, func, line, ...)                                                           \
+    if (!(exp) || !xlogger_IsEnabledFor(level))                                                                       \
+        ;                                                                                                             \
+    else {                                                                                                            \
+        XLoggerInfo info = {level, tag, file, func, line, {0, 0}, -1, -1, -1, 0};                                 \
+        gettimeofday(&info.timeval, NULL);                                                                            \
+        XLOGGER_ROUTER(__VA_ARGS__);                                                                                  \
+    }
+
+#define __xlogger_c_impl(level, ...) xlogger2(level, XLOGGER_TAG, __XFILE__, __XFUNCTION__, __LINE__, __VA_ARGS__)
+#define __xlogger_c_impl_if(level, exp, ...) \
+    xlogger2_if(exp, level, XLOGGER_TAG, __XFILE__, __XFUNCTION__, __LINE__, __VA_ARGS__)
+
+#define xverbose2(...) __xlogger_c_impl(kLevelVerbose, __VA_ARGS__)
+#define xdebug2(...) __xlogger_c_impl(kLevelDebug, __VA_ARGS__)
+#define xinfo2(...) __xlogger_c_impl(kLevelInfo, __VA_ARGS__)
+#define xwarn2(...) __xlogger_c_impl(kLevelWarn, __VA_ARGS__)
+#define xerror2(...) __xlogger_c_impl(kLevelError, __VA_ARGS__)
+#define xfatal2(...) __xlogger_c_impl(kLevelFatal, __VA_ARGS__)
+
+#define xverbose2_if(exp, ...) __xlogger_c_impl_if(kLevelVerbose, exp, __VA_ARGS__)
+#define xdebug2_if(exp, ...) __xlogger_c_impl_if(kLevelDebug, exp, __VA_ARGS__)
+#define xinfo2_if(exp, ...) __xlogger_c_impl_if(kLevelInfo, exp, __VA_ARGS__)
+#define xwarn2_if(exp, ...) __xlogger_c_impl_if(kLevelWarn, exp, __VA_ARGS__)
+#define xerror2_if(exp, ...) __xlogger_c_impl_if(kLevelError, exp, __VA_ARGS__)
+#define xfatal2_if(exp, ...) __xlogger_c_impl_if(kLevelFatal, exp, __VA_ARGS__)
+
+#define xassert2(exp, ...)                                                                                            \
+    if (((exp) || !xlogger_IsEnabledFor(kLevelFatal)))                                                                \
+        ;                                                                                                             \
+    else {                                                                                                            \
+        XLoggerInfo info = {kLevelFatal, XLOGGER_TAG, __XFILE__, __XFUNCTION__, __LINE__, {0, 0}, -1, -1, -1, 0}; \
+        gettimeofday(&info.timeval, NULL);                                                                               \
+        xlogger_AssertP(&info, #exp, __VA_ARGS__);                                                                    \
+    }
+//"##__VA_ARGS__" remove "," if NULL
 #endif
 #endif /* XLOGGER_H_ */
